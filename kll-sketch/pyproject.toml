@@ -9,7 +9,7 @@ description = "KLL streaming quantile sketch (mergeable, deterministic, zero dep
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Saridakis Stamatis-Christos" }]
 keywords = ["quantiles", "sketch", "streaming", "kll", "data-structures"]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
