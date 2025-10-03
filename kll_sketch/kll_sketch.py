@@ -70,12 +70,14 @@ class KLL:
             self._compress_until_ok()
 
     def extend(self, xs: Iterable[float]) -> None:
-        buf = self._levels[0]
         for x in xs:
             xv = float(x)
             if math.isnan(xv) or math.isinf(xv):
                 raise ValueError("values must be finite")
-            buf.append(xv)
+            # ``self._levels[0]`` can be replaced during compaction, so we must
+            # append directly to the current buffer each iteration instead of
+            # keeping a stale reference (which would silently drop values).
+            self._levels[0].append(xv)
             self._n += 1
             if self._capacity_exceeded():
                 self._compress_until_ok()
