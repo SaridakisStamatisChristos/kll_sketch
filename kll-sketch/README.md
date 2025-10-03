@@ -21,6 +21,8 @@ print(sk.quantile(0.5))  # ~3
 ```bash
 python -m pytest -q
 ```
+## Author
+Stamatis-Christos Saridakis
 
 ## License
 Apache-2.0
