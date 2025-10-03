@@ -1,4 +1,10 @@
-# kll_sketch.py — KLL Streaming Quantile Sketch (Pass #5: constants + style + docs)
+# KLL Streaming Quantile Sketch (Python)
+# Production-ready implementation with:
+# - Named constants (caps, loop guards)
+# - Deterministic RNG salting (seed + salt mixer)
+# - Weight-conserving compaction (both boundaries preserved)
+# - Aligned materialization (values + weights stay in sync)
+# - Merge + serialize/deserialize
 # Python 3.9+
 
 from __future__ import annotations
@@ -15,16 +21,15 @@ class KLL:
 
     Paper:
       - Karnin, Zohar, Edo Liberty, and Liran Lang. "Optimal quantile approximation
-        in streams." 2016 IEEE 57th Annual Symposium on Foundations of Computer
-        Science (FOCS). IEEE, 2016.
+        in streams." FOCS 2016.
 
     Strategy (high level):
       - Maintain multiple levels of buffers; level ℓ items represent weight 2^ℓ.
       - When over capacity, compact a level by sampling one element from each
         disjoint pair (parity-controlled), promoting the sampled elements to the
         next level (thus doubling their weight).
-      - Boundary elements not participating in any pair are preserved at the
-        current level to conserve total weight (sum of weights == n).
+      - Boundary elements NOT in any pair are preserved at the current level.
+        This guarantees total weight conservation:  Σ(weights) == n.
 
     Public API:
       add(x), extend(xs), quantile(q), median(), rank(x), cdf(xs),
@@ -34,13 +39,13 @@ class KLL:
     # ---------------------------- Tunable constants ----------------------------
     _MIN_CAPACITY: int = 40                 # minimal allowed capacity for accuracy
     _SOFT_CAP_FACTOR: float = 1.15          # global soft overfill before compaction
-    _LEVEL_BASE_MIN: int = 8                # base per-level capacity (~k//8, min 8)
+    _LEVEL_BASE_MIN: int = 8                # per-level base cap (~k//8, min 8)
     _STALL_BREAK_LOOPS: int = 16            # break if no progress after this many loops
     _MAX_COMPACT_LOOPS: int = 10_000        # absolute safety bound on compaction loops
     _DEFAULT_SEED: int = 0xA5B357           # deterministic default RNG seed
 
     # 64-bit odd constant (golden ratio scaled) for hashing the RNG salt.
-    # This mixes the configured seed with evolving salt (level + n + buffer size)
+    # We mix the configured seed with an evolving salt (level + n + buffer size)
     # to get stable but well-dispersed pseudo-randomness per compaction event.
     _SALT_MIX64: int = 0x9E3779B185EBCA87
 
@@ -87,6 +92,7 @@ class KLL:
         if self._n == 0:
             raise ValueError("empty sketch")
         vals, wts = self._materialize_aligned()
+        # invariant: sum(wts) == n
         target = q * (self._n - 1)  # rank target in [0, n-1]
         cum = 0.0
         for v, w in zip(vals, wts):
@@ -188,13 +194,13 @@ class KLL:
 
     def _rng(self, salt: int) -> random.Random:
         # Deterministic per-event RNG using a 64-bit mix of seed and salt.
-        # The SALT combines level + current n + buffer length to vary across events.
+        # SALT combines level + current n + buffer length to vary across events.
         mix = (self._rng_seed * self._SALT_MIX64 + (salt & 0xFFFFFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
         return random.Random(mix)
 
     def _find_compactable_level(self) -> Optional[int]:
         """
-        Return a level index that can form at least one pair under the current parity.
+        Return a level index that can form at least one pair.
         Preference: first level exceeding its cap (and len>=2), else the lowest
         level with len>=2; else None.
         """
@@ -229,7 +235,7 @@ class KLL:
                 return False
 
         promoted: List[float] = []
-        # True KLL: sample one from each disjoint pair; parity controls pairing.
+        # True KLL: choose one from each adjacent pair (unbiased)
         for i in range(start, len(buf) - 1, 2):
             promoted.append(buf[i] if rng.getrandbits(1) else buf[i + 1])
 
@@ -295,7 +301,7 @@ class KLL:
                             best, best_j = v, j
                 if best_j < 0:
                     break
-                out_v.append(best)                # value
+                out_v.append(best)                  # value
                 out_w.append(per_level[best_j][1])  # weight aligned to source level
                 idx[best_j] += 1
             return out_v, out_w
@@ -334,5 +340,5 @@ if __name__ == "__main__":
         print(f"q={q:>4}: est={est:+.4f} truth={truth:+.4f} |err|={err:.4f}")
 
     # Weight conservation sanity check
-    vals, wts = sk._materialize_aligned()
+    _, wts = sk._materialize_aligned()
     assert abs(sum(wts) - sk.size()) < 1e-9, "weight conservation violated"
