@@ -101,6 +101,38 @@ python -m pytest -q
 
 ---
 
+## 📈 Benchmarks
+
+Get the optional tooling with extras:
+
+```bash
+python -m pip install -e .[bench,test]
+```
+
+Run the full synthetic sweep (matching the defaults in the docs):
+
+```bash
+python benchmarks/bench_kll.py \
+  --module kll_sketch --class KLLSketch \
+  --outdir bench_out \
+  --Ns 1e5 1e6 \
+  --capacities 200 400 800 \
+  --distributions uniform normal exponential pareto bimodal \
+  --qs 0.01 0.05 0.1 0.25 0.5 0.75 0.9 0.95 0.99 \
+  --shards 8
+```
+
+Artifacts land in `bench_out/` with the following schema:
+
+- `accuracy.csv` — distribution, `N`, capacity, mode (`single`/`merged`), quantile, estimate, exact, and absolute value error.
+- `update_throughput.csv` — distribution, `N`, capacity, update wall time (seconds), and computed inserts/sec.
+- `query_latency.csv` — distribution, `N`, capacity, quantile, and per-query latency in microseconds.
+- `merge.csv` — distribution, `N`, capacity, shard count, and merge wall time (seconds).
+
+Visualise the outputs via `benchmarks/bench_plots.ipynb`, and read [`docs/benchmarks.md`](docs/benchmarks.md) for a narrated walkthrough.
+
+---
+
 ## 🗺️ Roadmap
 
 * Optional NumPy/C hot paths for sort/merge.

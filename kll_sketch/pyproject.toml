@@ -26,6 +26,13 @@ Homepage = "https://github.com/yourname/kll_sketch"
 Repository = "https://github.com/yourname/kll_sketch"
 
 [project.optional-dependencies]
+bench = [
+  "numpy>=1.22",
+  "pandas>=2.0",
+  "matplotlib>=3.7",
+  "pytest-benchmark>=4.0",
+  "jupyter",
+]
 test = [
   "pytest>=7.4",
   "hypothesis>=6.88",
@@ -34,7 +41,10 @@ test = [
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=kll_sketch --cov-report=term-missing --cov-report=xml"
-testpaths = ["kll_sketch/tests"]
+testpaths = ["kll_sketch/tests", "tests"]
+markers = [
+  "benchmark: performance benchmarks (opt-in)",
+]
 filterwarnings = [
   "error",
 ]
