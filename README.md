@@ -91,7 +91,10 @@ This implementation follows **Karnin–Lang–Liberty (2016)**: a space-optimal 
 
 ## ✅ Tests
 
+Install the test dependencies and run the suite:
+
 ```bash
+python -m pip install -r kll_sketch/requirements-test.txt
 python -m pytest -q
 ```
 
