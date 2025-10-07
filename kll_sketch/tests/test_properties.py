@@ -6,8 +6,12 @@ from typing import Sequence
 
 import math
 
-import hypothesis.strategies as st
-from hypothesis import given, settings
+import pytest
+
+hypothesis = pytest.importorskip("hypothesis")
+st = hypothesis.strategies
+given = hypothesis.given
+settings = hypothesis.settings
 
 from kll_sketch import KLL
 
