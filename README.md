@@ -5,6 +5,7 @@ Here’s a polished, stars-friendly **README.md** you can paste on your repo’s
 Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero deps, production-ready.
 
 [![CI](https://github.com/SaridakisStamatisChristos/kll_sketch/actions/workflows/ci.yml/badge.svg)](https://github.com/SaridakisStamatisChristos/kll_sketch/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/SaridakisStamatisChristos/kll_sketch/branch/main/graph/badge.svg)](https://codecov.io/gh/SaridakisStamatisChristos/kll_sketch)
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
