@@ -12,7 +12,7 @@ import math
 import struct
 import random
 import heapq
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from typing import Iterable, List, Tuple, Optional
 
 
@@ -399,7 +399,7 @@ class KLL:
         search_lo = 0
         for idx, q in ordered:
             target = q * (self._n - 1)
-            pos = bisect_left(prefix, target - 1e-12, lo=search_lo)
+            pos = bisect_right(prefix, target, lo=search_lo)
             if pos >= len(vals):
                 pos = len(vals) - 1
             out[idx] = vals[pos]
