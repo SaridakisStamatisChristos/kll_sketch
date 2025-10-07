@@ -33,7 +33,7 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers --cov=kll_sketch --cov-report=term-missing"
+addopts = "--strict-config --strict-markers --cov=kll_sketch --cov-report=term-missing --cov-report=xml"
 testpaths = ["kll_sketch/tests"]
 filterwarnings = [
   "error",
