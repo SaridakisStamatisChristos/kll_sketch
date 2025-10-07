@@ -118,7 +118,11 @@ def main() -> None:
         fallback_names = []
         if not cls_name.endswith("Sketch"):
             fallback_names.append(f"{cls_name}Sketch")
-        fallback_names.append("KLLSketch")
+        else:
+            base = cls_name[: -len("Sketch")]
+            if base:
+                fallback_names.append(base)
+        fallback_names.extend(["KLLSketch", "KLL"])
         for candidate in fallback_names:
             if hasattr(module, candidate):
                 cls_name = candidate
