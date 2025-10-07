@@ -206,3 +206,27 @@ def test_quantiles_helper_even_spacing() -> None:
 
     median_only = sketch.quantiles(1)
     assert median_only == pytest.approx([sketch.median()])
+
+
+def test_quantiles_at_matches_repeated_calls() -> None:
+    rng = random.Random(123)
+    xs = [rng.gauss(0.0, 2.0) for _ in range(5000)]
+
+    sketch = KLL(capacity=200)
+    sketch.extend(xs)
+
+    qs = [0.05, 0.2, 0.33, 0.5, 0.75, 0.95]
+    batched = sketch.quantiles_at(qs)
+    repeated = [sketch.quantile(q) for q in qs]
+    assert batched == pytest.approx(repeated, abs=1e-12)
+
+
+def test_quantiles_at_accepts_unsorted_probabilities() -> None:
+    sketch = KLL(capacity=128)
+    sketch.extend(range(1000))
+
+    qs = [0.9, 0.1, 0.5]
+    values = sketch.quantiles_at(qs)
+    assert values[0] == pytest.approx(sketch.quantile(0.9))
+    assert values[1] == pytest.approx(sketch.quantile(0.1))
+    assert values[2] == pytest.approx(sketch.quantile(0.5))

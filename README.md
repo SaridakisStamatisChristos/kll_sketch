@@ -18,7 +18,8 @@ Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero d
 - **Weighted ingestion** via `add(x, weight)` for aggregated data
 - **Mergeable** sketches for distributed/parallel ingestion
 - **Serializable** (`to_bytes` / `from_bytes`)
-- **Convenience helpers** such as `quantiles(m)` for evenly spaced cuts
+- **Convenience helpers** such as `quantiles(m)` and `quantiles_at(qs)` for
+  evenly spaced or ad-hoc cuts
 - **Zero dependencies**, Python 3.9+
 
 ---
@@ -60,6 +61,7 @@ assert abs(a2.quantile(0.5) - a.quantile(0.5)) < 1e-12
 | `size()`                      | Total number of ingested items `n`.     |
 | `quantile(q)`                 | Approximate `q`-quantile for `q∈[0,1]`. |
 | `quantiles(m)`                | Evenly spaced cut points.               |
+| `quantiles_at(qs)`            | Batched quantiles for arbitrary `qs`.   |
 | `median()`                    | Convenience for `quantile(0.5)`.        |
 | `rank(x)`                     | Approximate rank of `x` in `[0, n]`.    |
 | `cdf(xs)`                     | CDF values for a sequence `xs`.         |
@@ -81,6 +83,7 @@ This implementation follows **Karnin–Lang–Liberty (2016)**: a space-optimal 
 * Typical error ≈ **O(1/k)** in rank space (increase `capacity` to tighten ε).
 * Updates amortized **O(1)** with occasional compactions.
 * Queries merge level buffers (**k-way**) and scan weights to the target rank.
+  Use `quantiles_at` to answer multiple quantiles with a single scan.
 
 > Tip: For heavy query loads, cache materialized arrays between queries.
 

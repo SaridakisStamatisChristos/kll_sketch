@@ -12,6 +12,7 @@ import math
 import struct
 import random
 import heapq
+from bisect import bisect_left
 from typing import Iterable, List, Tuple, Optional
 
 
@@ -32,8 +33,8 @@ class KLL:
         This guarantees total weight conservation:  Σ(weights) == n.
 
     Public API:
-      add(x, weight=1), extend(xs), quantile(q), quantiles(m), median(), rank(x),
-      cdf(xs), merge(other), to_bytes(), from_bytes()
+      add(x, weight=1), extend(xs), quantile(q), quantiles(m), quantiles_at(qs),
+      median(), rank(x), cdf(xs), merge(other), to_bytes(), from_bytes()
     """
 
     # ---------------------------- Tunable constants ----------------------------
@@ -100,17 +101,22 @@ class KLL:
     def quantile(self, q: float) -> float:
         if not (0.0 <= q <= 1.0):
             raise ValueError("q must be in [0,1]")
-        if self._n == 0:
-            raise ValueError("empty sketch")
-        vals, wts = self._materialize_aligned()
-        # invariant: sum(wts) == n
-        target = q * (self._n - 1)  # rank target in [0, n-1]
-        cum = 0.0
-        for v, w in zip(vals, wts):
-            cum += w
-            if cum >= target - 1e-12:
-                return v
-        return vals[-1]
+        return self._batched_quantiles([q])[0]
+
+    def quantiles_at(self, probabilities: Iterable[float]) -> List[float]:
+        """Return the approximate quantiles for each entry in ``probabilities``.
+
+        This method evaluates all requested quantiles using a single materialized
+        pass through the sketch, which is significantly faster than issuing
+        repeated :meth:`quantile` calls for large query batches.
+        """
+
+        qs = [float(q) for q in probabilities]
+        if any(not (0.0 <= q <= 1.0) for q in qs):
+            raise ValueError("all probabilities must be in [0,1]")
+        if not qs:
+            return []
+        return self._batched_quantiles(qs)
 
     def rank(self, x: float) -> float:
         """Approximate rank in [0, n]."""
@@ -350,7 +356,8 @@ class KLL:
         if m == 1:
             return [self.quantile(0.5)]
         step = 1.0 / m
-        return [self.quantile(step * i) for i in range(1, m)]
+        qs = [step * i for i in range(1, m)]
+        return self.quantiles_at(qs)
 
     # ---------------------- weighted ingestion internals ----------------------
     def _ingest_weighted_value(self, value: float, weight: int) -> None:
@@ -367,6 +374,31 @@ class KLL:
         self._n += weight
         if self._capacity_exceeded():
             self._compress_until_ok()
+
+    def _batched_quantiles(self, qs: List[float]) -> List[float]:
+        if self._n == 0:
+            raise ValueError("empty sketch")
+        vals, wts = self._materialize_aligned()
+        if not vals:
+            raise ValueError("empty sketch")
+
+        prefix: List[float] = []
+        total = 0.0
+        for w in wts:
+            total += w
+            prefix.append(total)
+
+        ordered = sorted(enumerate(qs), key=lambda item: item[1])
+        out = [0.0] * len(qs)
+        search_lo = 0
+        for idx, q in ordered:
+            target = q * (self._n - 1)
+            pos = bisect_left(prefix, target - 1e-12, lo=search_lo)
+            if pos >= len(vals):
+                pos = len(vals) - 1
+            out[idx] = vals[pos]
+            search_lo = pos
+        return out
 
 
 # ----------------------------- quick self-test --------------------------------
