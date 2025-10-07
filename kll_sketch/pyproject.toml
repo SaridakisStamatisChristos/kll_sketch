@@ -24,3 +24,25 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/yourname/kll_sketch"
 Repository = "https://github.com/yourname/kll_sketch"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+  "hypothesis>=6.88",
+  "pytest-cov>=4.1",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=kll_sketch --cov-report=term-missing"
+testpaths = ["kll_sketch/tests"]
+filterwarnings = [
+  "error",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["kll_sketch"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
