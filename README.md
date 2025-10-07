@@ -15,8 +15,10 @@ Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero d
 ## ✨ Features
 - **Accurate ε-quantiles** under tight memory bounds (KLL algorithm)
 - **Deterministic compaction** (parity sampling) + **weight conservation**
+- **Weighted ingestion** via `add(x, weight)` for aggregated data
 - **Mergeable** sketches for distributed/parallel ingestion
 - **Serializable** (`to_bytes` / `from_bytes`)
+- **Convenience helpers** such as `quantiles(m)` for evenly spaced cuts
 - **Zero dependencies**, Python 3.9+
 
 ---
@@ -31,7 +33,8 @@ sk.extend([1, 5, 2, 9, 3, 6, 4, 8, 7])
 print("n =", sk.size())
 print("median ≈", sk.median())
 print("q(0.9) ≈", sk.quantile(0.9))
-````
+print("quartiles ≈", sk.quantiles(4))
+```
 
 ### Merge & Serialize
 
@@ -52,10 +55,11 @@ assert abs(a2.quantile(0.5) - a.quantile(0.5)) < 1e-12
 
 | Method                        | Description                             |
 | ----------------------------- | --------------------------------------- |
-| `add(x)`                      | Ingest one value.                       |
+| `add(x, weight=1)`            | Ingest one value with optional weight.  |
 | `extend(xs)`                  | Ingest an iterable of values.           |
 | `size()`                      | Total number of ingested items `n`.     |
 | `quantile(q)`                 | Approximate `q`-quantile for `q∈[0,1]`. |
+| `quantiles(m)`                | Evenly spaced cut points.               |
 | `median()`                    | Convenience for `quantile(0.5)`.        |
 | `rank(x)`                     | Approximate rank of `x` in `[0, n]`.    |
 | `cdf(xs)`                     | CDF values for a sequence `xs`.         |
@@ -92,8 +96,6 @@ python -m pytest -q
 
 ## 🗺️ Roadmap
 
-* Weighted ingestion (`add(x, w)`).
-* `quantiles(m)` helper (evenly spaced cut points).
 * Optional NumPy/C hot paths for sort/merge.
 
 ---
