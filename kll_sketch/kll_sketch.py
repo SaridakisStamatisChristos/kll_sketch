@@ -240,37 +240,43 @@ class KLL:
 
         buf = self._levels[lvl]
         buf.sort()
+        if len(buf) < 3:
+            # Not enough items to compact while preserving min/max boundaries.
+            return False
+
         rng = self._rng(salt=lvl + self._n + len(buf))
         keep_odd = rng.getrandbits(1) == 1
         start = 1 if keep_odd else 0
 
-        # Ensure we can form at least one pair; if not, flip parity once.
-        if len(buf) - start < 2:
+        # Always preserve explicit boundary elements.
+        core = buf[1:-1]
+        if len(core) < 2:
+            return False
+
+        if len(core) - start < 2:
             keep_odd = not keep_odd
             start = 1 if keep_odd else 0
-            if len(buf) - start < 2:
+            if len(core) - start < 2:
                 return False
 
         promoted: List[float] = []
-        # True KLL: choose one from each adjacent pair (unbiased)
-        for i in range(start, len(buf) - 1, 2):
-            promoted.append(buf[i] if rng.getrandbits(1) else buf[i + 1])
+        for i in range(start, len(core) - 1, 2):
+            promoted.append(core[i] if rng.getrandbits(1) else core[i + 1])
 
-        # Boundary preservation: keep BOTH non-paired boundaries.
-        leftover: List[float] = []
+        if not promoted:
+            return False
+
+        leftover: List[float] = [buf[0]]
         if start == 1:
-            # Front boundary not in any pair
-            leftover.append(buf[0])
-        if (len(buf) - start) % 2 == 1:
-            # Tail boundary not in any pair
-            tail = buf[-1]
-            if not leftover or leftover[-1] != tail:
-                leftover.append(tail)
+            leftover.append(core[0])
+        if (len(core) - start) % 2 == 1:
+            leftover.append(core[-1])
+        leftover.append(buf[-1])
 
         self._levels[lvl] = leftover
         self._ensure_levels(lvl + 2)
         self._levels[lvl + 1].extend(promoted)
-        return len(promoted) > 0
+        return True
 
     def _compress_until_ok(self) -> None:
         loops = 0
