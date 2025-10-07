@@ -17,7 +17,7 @@ from typing import Iterable, List, Tuple, Optional
 
 class KLL:
     """
-    KLL streaming quantile sketch (unweighted, mergeable, serializable).
+    KLL streaming quantile sketch (supports weighted ingestion, mergeable, serializable).
 
     Paper:
       - Karnin, Zohar, Edo Liberty, and Liran Lang. "Optimal quantile approximation
@@ -32,8 +32,8 @@ class KLL:
         This guarantees total weight conservation:  Σ(weights) == n.
 
     Public API:
-      add(x), extend(xs), quantile(q), median(), rank(x), cdf(xs),
-      merge(other), to_bytes(), from_bytes()
+      add(x, weight=1), extend(xs), quantile(q), quantiles(m), median(), rank(x),
+      cdf(xs), merge(other), to_bytes(), from_bytes()
     """
 
     # ---------------------------- Tunable constants ----------------------------
@@ -60,27 +60,36 @@ class KLL:
         self._rng_seed = int(rng_seed)
 
     # ------------------------------- Public API --------------------------------
-    def add(self, x: float) -> None:
+    def add(self, x: float, weight: float = 1.0) -> None:
+        """Ingest a value with an optional (integer) weight."""
+
+        # ``weight`` may be provided as an ``int`` or any float that rounds to an
+        # integer (for compatibility with NumPy scalars).  Each unit of weight is
+        # equivalent to inserting ``x`` once; internally we fold the binary
+        # decomposition of ``weight`` across the sketch levels to avoid O(weight)
+        # work for large aggregates.
+
         xv = float(x)
         if math.isnan(xv) or math.isinf(xv):
             raise ValueError("x must be finite")
-        self._levels[0].append(xv)
-        self._n += 1
-        if self._capacity_exceeded():
-            self._compress_until_ok()
+
+        wv = float(weight)
+        if math.isnan(wv) or math.isinf(wv):
+            raise ValueError("weight must be finite")
+        if wv <= 0.0:
+            raise ValueError("weight must be > 0")
+
+        rounded = int(round(wv))
+        if abs(wv - rounded) > 1e-9:
+            raise ValueError("weight must be an integer")
+        if rounded <= 0:
+            raise ValueError("weight must be > 0")
+
+        self._ingest_weighted_value(xv, rounded)
 
     def extend(self, xs: Iterable[float]) -> None:
         for x in xs:
-            xv = float(x)
-            if math.isnan(xv) or math.isinf(xv):
-                raise ValueError("values must be finite")
-            # ``self._levels[0]`` can be replaced during compaction, so we must
-            # append directly to the current buffer each iteration instead of
-            # keeping a stale reference (which would silently drop values).
-            self._levels[0].append(xv)
-            self._n += 1
-            if self._capacity_exceeded():
-                self._compress_until_ok()
+            self.add(x)
 
     def size(self) -> int:
         return self._n
@@ -325,6 +334,39 @@ class KLL:
             if i < len(arr):
                 heapq.heappush(heap, (arr[i], j, i, w))
         return out_v2, out_w2
+
+    def quantiles(self, m: int) -> List[float]:
+        """Return evenly spaced quantile cut points.
+
+        ``m`` corresponds to the number of equal-mass buckets.  For ``m > 1`` the
+        return value contains ``m-1`` interior cut points.  ``m == 1`` yields the
+        median for convenience.
+        """
+
+        if m <= 0:
+            raise ValueError("m must be positive")
+        if self._n == 0:
+            raise ValueError("empty sketch")
+        if m == 1:
+            return [self.quantile(0.5)]
+        step = 1.0 / m
+        return [self.quantile(step * i) for i in range(1, m)]
+
+    # ---------------------- weighted ingestion internals ----------------------
+    def _ingest_weighted_value(self, value: float, weight: int) -> None:
+        """Fold ``weight`` copies of ``value`` into the level buffers."""
+
+        remaining = weight
+        level = 0
+        while remaining:
+            if remaining & 1:
+                self._ensure_levels(level + 1)
+                self._levels[level].append(value)
+            remaining >>= 1
+            level += 1
+        self._n += weight
+        if self._capacity_exceeded():
+            self._compress_until_ok()
 
 
 # ----------------------------- quick self-test --------------------------------

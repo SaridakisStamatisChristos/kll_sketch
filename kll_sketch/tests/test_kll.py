@@ -131,6 +131,12 @@ def test_invalid_inputs_raise() -> None:
     with pytest.raises(ValueError):
         sketch.add(float("inf"))
     with pytest.raises(ValueError):
+        sketch.add(1.0, weight=0)
+    with pytest.raises(ValueError):
+        sketch.add(1.0, weight=-2)
+    with pytest.raises(ValueError):
+        sketch.add(1.0, weight=1.5)
+    with pytest.raises(ValueError):
         sketch.quantile(-0.01)
     with pytest.raises(ValueError):
         sketch.quantile(1.5)
@@ -167,3 +173,36 @@ def test_rank_brackets_quantile() -> None:
         target_rank = q * (len(xs) - 1)
         assert lower <= target_rank + 200
         assert upper >= target_rank - 200
+
+
+def test_weighted_ingestion_matches_repetition() -> None:
+    weighted = KLL(capacity=128)
+    weighted.add(-1.0, weight=3)
+    weighted.add(2.5, weight=5)
+    weighted.add(10.0, weight=2)
+
+    expanded = KLL(capacity=128)
+    expanded.extend([-1.0] * 3)
+    expanded.extend([2.5] * 5)
+    expanded.extend([10.0] * 2)
+
+    assert weighted.size() == expanded.size() == 10
+    for q in [0.1, 0.5, 0.9]:
+        assert weighted.quantile(q) == pytest.approx(expanded.quantile(q), abs=1e-9)
+
+
+def test_quantiles_helper_even_spacing() -> None:
+    sketch = KLL(capacity=128)
+    sketch.extend(range(100))
+
+    quartiles = sketch.quantiles(4)
+    assert len(quartiles) == 3
+    for lhs, rhs in zip(quartiles, quartiles[1:]):
+        assert lhs <= rhs
+    # Check against expected percentile anchors from the raw data.
+    truth = [float(i) for i in (25, 50, 75)]
+    for estimate, reference in zip(quartiles, truth):
+        assert estimate == pytest.approx(reference, abs=5.0)
+
+    median_only = sketch.quantiles(1)
+    assert median_only == pytest.approx([sketch.median()])
