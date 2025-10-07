@@ -205,6 +205,13 @@ class KLL:
         return self._total_items() > int(self._k * self._SOFT_CAP_FACTOR)
 
     def _level_capacity(self, level: int) -> int:
+        # Preserve exactness while the total population fits inside ``k`` by
+        # deferring compaction.  This mirrors the streaming ingestion behaviour
+        # where no compression is triggered before exceeding ``k`` items, which
+        # keeps small merges numerically identical to simple extension.
+        if self._n <= self._k:
+            return self._k
+
         # Geometric schedule; sum over levels ≈ O(k)
         base = max(self._LEVEL_BASE_MIN, self._k // 8)
         return base * (1 << max(0, level))
