@@ -75,6 +75,12 @@ def test_merge_matches_extending(xs: list[float], ys: list[float]) -> None:
     b.extend(ys)
     a.merge(b)
 
+    if not combined:
+        assert serial.size() == 0
+        assert a.size() == 0
+        assert b.size() == 0
+        return
+
     for q in [0.0, 0.1, 0.5, 0.9, 1.0]:
         assert math.isclose(a.quantile(q), serial.quantile(q), rel_tol=0.05, abs_tol=0.05)
 
