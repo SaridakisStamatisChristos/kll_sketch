@@ -133,6 +133,12 @@ Visualise the outputs via `benchmarks/bench_plots.ipynb`, and read [`docs/benchm
 
 ---
 
+## 🛡️ Operations
+
+For day-2 guidance—monitoring, alerting, capacity planning, and a step-by-step upgrade playbook—see the [Operational Guide](docs/operations.md).
+
+---
+
 ## 🗺️ Roadmap
 
 * Optional NumPy/C hot paths for sort/merge.
