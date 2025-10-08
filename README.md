@@ -21,7 +21,7 @@ Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero d
 - **Serializable** (`to_bytes` / `from_bytes`)
 - **Convenience helpers** such as `quantiles(m)` and `quantiles_at(qs)` for
   evenly spaced or ad-hoc cuts
-- **Zero dependencies**, Python 3.9+
+- **Zero dependencies**, Python 3.9+ (self-hosted build backend)
 
 ---
 
