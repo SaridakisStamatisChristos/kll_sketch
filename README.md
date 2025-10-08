@@ -103,33 +103,33 @@ python -m pytest -q
 
 ## 🌐 Offline installation
 
-The project now ships a tiny PEP 517 backend implemented in
-`kll_sketch._build_backend`. Because the backend only uses the Python standard
-library there are **no build-time dependencies** to stage.
+The source distribution relies on `setuptools` and `wheel` as build-backend
+dependencies. When you install in an isolated or air-gapped environment you
+must provide those wheels yourself; otherwise the build frontend cannot
+bootstrap the backend.
 
-* Install a released wheel: `python -m pip install --no-index kll-sketch-*.whl`
-* Install from a source checkout: `python -m pip install --no-index .`
+1. On a machine with internet access, download the wheels you need:
 
-Both commands work in air-gapped environments. The CI workflow exercises the
-second command on every commit to guarantee we do not regress offline support.
+   ```bash
+   python -m pip download --only-binary=:all: --dest ./wheelhouse \
+       setuptools>=68 wheel
+   python -m pip download --only-binary=:all: --dest ./wheelhouse \
+       kll-sketch
+   ```
 
-See [docs/production-readiness.md](docs/production-readiness.md) for the
-validated platform matrix and operational guarantees.
+2. Transfer the `wheelhouse/` directory to the offline environment.
 
-## 🖥️ Supported environments
+3. Install using only the local wheels:
 
-| OS      | Python |
-| ------- | ------ |
-| Linux   | 3.9 – 3.12 |
-| macOS   | 3.9 – 3.12 |
-| Windows | 3.9 – 3.12 |
+   ```bash
+   python -m pip install --no-index --find-links ./wheelhouse \
+       setuptools wheel kll-sketch
+   ```
 
----
-
-## 📦 Release & validation
-
-* [Production readiness status](docs/production-readiness.md)
-* [Signed release checklist](docs/release-checklist.md)
+If you build from a git checkout instead of a released wheel, vendor the
+backend wheels somewhere under version control (for example
+`tools/vendor/`) and point `PIP_FIND_LINKS` or your installer’s equivalent at
+that directory before running `pip install .`.
 
 ---
 
