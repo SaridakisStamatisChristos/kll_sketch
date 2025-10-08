@@ -6,12 +6,16 @@ on:
     branches: [ "**" ]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix["python-version"] }}
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -19,6 +23,7 @@ jobs:
       - name: Run tests with coverage
         run: python -m pytest --cov=kll_sketch --cov-report=term-missing --cov-report=xml kll_sketch/tests
       - name: Upload coverage reports to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix['python-version'] == '3.11'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -56,3 +61,30 @@ jobs:
         with:
           name: bench-out
           path: bench_out
+  offline-install:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated virtual environment
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip list
+      - name: Install from source with no index
+        env:
+          PIP_NO_INDEX: "1"
+        run: |
+          . .venv/bin/activate
+          python -m pip install --no-index .
+      - name: Smoke test the offline install
+        run: |
+          . .venv/bin/activate
+          python - <<'PY'
+from kll_sketch import KLL
+
+sketch = KLL(capacity=128)
+sketch.extend(range(10_000))
+assert abs(sketch.quantile(0.5) - 4_999.5) < 10
+print("offline smoke test passed")
+PY

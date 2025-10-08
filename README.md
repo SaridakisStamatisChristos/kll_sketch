@@ -21,7 +21,7 @@ Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero d
 - **Serializable** (`to_bytes` / `from_bytes`)
 - **Convenience helpers** such as `quantiles(m)` and `quantiles_at(qs)` for
   evenly spaced or ad-hoc cuts
-- **Zero dependencies**, Python 3.9+
+- **Zero dependencies**, Python 3.9+ (self-hosted build backend)
 
 ---
 
@@ -98,6 +98,38 @@ Install the test dependencies and run the suite:
 python -m pip install -r kll_sketch/requirements-test.txt
 python -m pytest -q
 ```
+
+---
+
+## 🌐 Offline installation
+
+The project now ships a tiny PEP 517 backend implemented in
+`kll_sketch._build_backend`. Because the backend only uses the Python standard
+library there are **no build-time dependencies** to stage.
+
+* Install a released wheel: `python -m pip install --no-index kll-sketch-*.whl`
+* Install from a source checkout: `python -m pip install --no-index .`
+
+Both commands work in air-gapped environments. The CI workflow exercises the
+second command on every commit to guarantee we do not regress offline support.
+
+See [docs/production-readiness.md](docs/production-readiness.md) for the
+validated platform matrix and operational guarantees.
+
+## 🖥️ Supported environments
+
+| OS      | Python |
+| ------- | ------ |
+| Linux   | 3.9 – 3.12 |
+| macOS   | 3.9 – 3.12 |
+| Windows | 3.9 – 3.12 |
+
+---
+
+## 📦 Release & validation
+
+* [Production readiness status](docs/production-readiness.md)
+* [Signed release checklist](docs/release-checklist.md)
 
 ---
 
