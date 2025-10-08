@@ -16,6 +16,10 @@ from bisect import bisect_left, bisect_right
 from typing import Iterable, List, Tuple, Optional
 
 
+SERIAL_FORMAT_MAGIC = b"KLL1"
+SERIAL_FORMAT_VERSION = 1
+
+
 class KLL:
     """
     KLL streaming quantile sketch (supports weighted ingestion, mergeable, serializable).
@@ -31,6 +35,16 @@ class KLL:
         next level (thus doubling their weight).
       - Boundary elements NOT in any pair are preserved at the current level.
         This guarantees total weight conservation:  Σ(weights) == n.
+
+    Compatibility and upgrade policy:
+      - The serialized binary format is versioned via the ``KLL{SERIAL_FORMAT_VERSION}``
+        magic header. New minor releases preserve backwards compatibility with
+        previously published format versions; breaking changes bump the header
+        and provide a migration path through :meth:`from_bytes`.
+      - The Python API follows semantic versioning. Patch releases may add
+        methods or keyword arguments but will not change behaviour of existing
+        calls. Major releases are reserved for intentional, documented
+        compatibility breaks.
 
     Public API:
       add(x, weight=1), extend(xs), quantile(q), quantiles(m), quantiles_at(qs),
@@ -152,13 +166,19 @@ class KLL:
 
     def to_bytes(self) -> bytes:
         """
-        Format:
+        Serialize the sketch into the versioned ``KLL1`` binary envelope.
+
+        The layout is:
           magic 'KLL1' (4B), k(uint32), n(uint64), L(uint32), seed(uint64),
           then for each level: len(uint32) followed by len doubles.
+
+        The header version is bumped only when the on-wire format changes in a
+        backwards-incompatible way. Minor library upgrades keep emitting
+        ``KLL1`` payloads so downstream systems can safely deserialize historical
+        snapshots.
         """
-        magic = b"KLL1"
         out = bytearray()
-        out += magic
+        out += SERIAL_FORMAT_MAGIC
         out += struct.pack(">I", self._k)
         out += struct.pack(">Q", self._n)
         out += struct.pack(">I", len(self._levels))
@@ -171,9 +191,13 @@ class KLL:
 
     @classmethod
     def from_bytes(cls, b: bytes) -> "KLL":
+        """Rehydrate a :class:`KLL` instance from :meth:`to_bytes` output."""
         mv = memoryview(b)
-        if mv[:4].tobytes() != b"KLL1":
-            raise ValueError("bad magic")
+        if mv[:4].tobytes() != SERIAL_FORMAT_MAGIC:
+            raise ValueError(
+                "Unsupported serialization header. The 1.x reader only understands "
+                f"{SERIAL_FORMAT_MAGIC!r}."
+            )
         off = 4
         k = struct.unpack_from(">I", mv, off)[0]; off += 4
         n = struct.unpack_from(">Q", mv, off)[0]; off += 8
