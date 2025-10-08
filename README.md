@@ -101,6 +101,38 @@ python -m pytest -q
 
 ---
 
+## 🌐 Offline installation
+
+The source distribution relies on `setuptools` and `wheel` as build-backend
+dependencies. When you install in an isolated or air-gapped environment you
+must provide those wheels yourself; otherwise the build frontend cannot
+bootstrap the backend.
+
+1. On a machine with internet access, download the wheels you need:
+
+   ```bash
+   python -m pip download --only-binary=:all: --dest ./wheelhouse \
+       setuptools>=68 wheel
+   python -m pip download --only-binary=:all: --dest ./wheelhouse \
+       kll-sketch
+   ```
+
+2. Transfer the `wheelhouse/` directory to the offline environment.
+
+3. Install using only the local wheels:
+
+   ```bash
+   python -m pip install --no-index --find-links ./wheelhouse \
+       setuptools wheel kll-sketch
+   ```
+
+If you build from a git checkout instead of a released wheel, vendor the
+backend wheels somewhere under version control (for example
+`tools/vendor/`) and point `PIP_FIND_LINKS` or your installer’s equivalent at
+that directory before running `pip install .`.
+
+---
+
 ## 📈 Benchmarks
 
 Get the optional tooling with extras:
