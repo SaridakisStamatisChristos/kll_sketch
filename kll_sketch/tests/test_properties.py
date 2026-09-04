@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import bisect
-import math
 import random
 
 import pytest
@@ -52,14 +51,23 @@ def test_structural_invariants_hold(xs: list[float]) -> None:
     st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
 )
 @settings(max_examples=80, deadline=None)
-def test_quantile_rank_error_is_bounded_coarsely(xs: list[float], q: float) -> None:
+def test_quantile_contract_and_rank_error(xs: list[float], q: float) -> None:
     sketch = KLL(capacity=200, rng_seed=19)
     sketch.extend(xs)
     ordered = sorted(xs)
-    error = _rank_error(ordered, sketch.quantile(q), q)
-    # A deterministic per-example property gate. The release characterization
-    # harness provides the tighter p95/p99 empirical envelope.
-    assert error <= 0.05
+    estimate = sketch.quantile(q)
+
+    if not sketch.is_estimation_mode:
+        # Before the first compaction the sketch is exact. Quantile semantics are
+        # the lower order statistic at floor(q * (n - 1)); do not apply a
+        # continuous-rank error metric to tiny exact samples such as [0, 1].
+        expected = ordered[int(q * (len(ordered) - 1))]
+        assert estimate == expected
+        return
+
+    # Once compaction starts, validate the actual KLL contract in normalized-rank
+    # space. Release characterization provides the tighter p95/p99 envelope.
+    assert _rank_error(ordered, estimate, q) <= 0.05
 
 
 @given(
