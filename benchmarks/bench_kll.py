@@ -13,10 +13,17 @@ import hashlib
 import math
 from pathlib import Path
 import statistics
+import sys
 import time
 from typing import Callable
 
 import random
+
+# Make the documented ``python benchmarks/bench_kll.py`` command work directly
+# from a source checkout without requiring an editable install first.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from kll_sketch import KLL
 
