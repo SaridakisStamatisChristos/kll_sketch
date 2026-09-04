@@ -16,13 +16,16 @@ class Author:
 
 PROJECT_METADATA: Mapping[str, object] = {
     "name": "kll-sketch",
-    "version": "2.0.0",
-    "summary": "High-integrity KLL streaming quantile sketch with strict serialization and rank-space validation",
+    "version": "3.0.0",
+    "summary": "High-integrity KLL streaming quantile sketch with optional C++17 and SIMD acceleration",
     "readme": {"path": _PROJECT_ROOT / "README.md", "content_type": "text/markdown"},
     "requires_python": ">=3.10",
     "license": {"text": "Apache-2.0", "files": ["LICENSE"]},
     "authors": [Author(name="Stamatis-Christos Saridakis", email="stamatis@saridakis.dev")],
-    "keywords": ["quantiles", "sketch", "streaming", "kll", "data-structures", "approximate-algorithms"],
+    "keywords": [
+        "quantiles", "sketch", "streaming", "kll", "data-structures",
+        "approximate-algorithms", "simd", "cpp"
+    ],
     "classifiers": [
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3 :: Only",
@@ -31,6 +34,7 @@ PROJECT_METADATA: Mapping[str, object] = {
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
         "Programming Language :: Python :: 3.14",
+        "Programming Language :: C++",
         "Operating System :: OS Independent",
         "Topic :: Scientific/Engineering :: Information Analysis",
     ],
