@@ -20,7 +20,13 @@ filterwarnings = ["error"]
 [tool.coverage.run]
 branch = true
 source = ["kll_sketch"]
-omit = ["kll_sketch/_build_backend.py", "kll_sketch/_metadata.py", "kll_sketch/tests/*"]
+omit = [
+  "kll_sketch/_build_backend.py",
+  "kll_sketch/_metadata.py",
+  "kll_sketch/_native_build.py",
+  "kll_sketch/_native_runtime.py",
+  "kll_sketch/tests/*",
+]
 
 [tool.coverage.report]
 precision = 2
