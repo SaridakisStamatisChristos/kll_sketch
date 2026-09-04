@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -57,8 +56,8 @@ bool scan_scalar(const double* data, std::size_t n, double& min_value, double& m
         if (!std::isfinite(value)) {
             return false;
         }
-        lo = std::min(lo, value);
-        hi = std::max(hi, value);
+        if (value < lo) lo = value;
+        if (value > hi) hi = value;
     }
     min_value = lo;
     max_value = hi;
@@ -67,15 +66,10 @@ bool scan_scalar(const double* data, std::size_t n, double& min_value, double& m
 
 #if KLL_RUNTIME_AVX2
 __attribute__((target("avx2")))
-bool scan_avx2(const double* data, std::size_t n, double& min_value, double& max_value) {
-    if (n == 0) {
-        return true;
-    }
-    std::size_t i = 0;
+bool finite_avx2(const double* data, std::size_t n) {
     const __m256d sign_mask = _mm256_set1_pd(-0.0);
     const __m256d max_finite = _mm256_set1_pd(std::numeric_limits<double>::max());
-    __m256d vmin = _mm256_set1_pd(std::numeric_limits<double>::infinity());
-    __m256d vmax = _mm256_set1_pd(-std::numeric_limits<double>::infinity());
+    std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
         const __m256d values = _mm256_loadu_pd(data + i);
         const __m256d abs_values = _mm256_andnot_pd(sign_mask, values);
@@ -83,25 +77,10 @@ bool scan_avx2(const double* data, std::size_t n, double& min_value, double& max
         if (_mm256_movemask_pd(finite) != 0xF) {
             return false;
         }
-        vmin = _mm256_min_pd(vmin, values);
-        vmax = _mm256_max_pd(vmax, values);
     }
-    alignas(32) double mins[4];
-    alignas(32) double maxs[4];
-    _mm256_store_pd(mins, vmin);
-    _mm256_store_pd(maxs, vmax);
-    double lo = std::min(std::min(mins[0], mins[1]), std::min(mins[2], mins[3]));
-    double hi = std::max(std::max(maxs[0], maxs[1]), std::max(maxs[2], maxs[3]));
     for (; i < n; ++i) {
-        const double value = data[i];
-        if (!std::isfinite(value)) {
-            return false;
-        }
-        lo = std::min(lo, value);
-        hi = std::max(hi, value);
+        if (!std::isfinite(data[i])) return false;
     }
-    min_value = lo;
-    max_value = hi;
     return true;
 }
 
@@ -114,7 +93,20 @@ bool cpu_has_avx2() {
 bool scan_buffer(const double* data, std::size_t n, double& min_value, double& max_value) {
 #if KLL_RUNTIME_AVX2
     if (cpu_has_avx2()) {
-        return scan_avx2(data, n, min_value, max_value);
+        if (!finite_avx2(data, n)) return false;
+        if (n == 0) return true;
+        // Preserve Python's first-value/tie semantics (including signed zero)
+        // while using SIMD for the expensive finiteness validation.
+        double lo = data[0];
+        double hi = data[0];
+        for (std::size_t i = 1; i < n; ++i) {
+            const double value = data[i];
+            if (value < lo) lo = value;
+            if (value > hi) hi = value;
+        }
+        min_value = lo;
+        max_value = hi;
+        return true;
     }
 #endif
     return scan_scalar(data, n, min_value, max_value);
@@ -122,9 +114,7 @@ bool scan_buffer(const double* data, std::size_t n, double& min_value, double& m
 
 bool py_to_double(PyObject* obj, double& out) {
     out = PyFloat_AsDouble(obj);
-    if (PyErr_Occurred()) {
-        return false;
-    }
+    if (PyErr_Occurred()) return false;
     if (!std::isfinite(out)) {
         PyErr_SetString(PyExc_ValueError, "native batch contains a non-finite value");
         return false;
@@ -134,9 +124,7 @@ bool py_to_double(PyObject* obj, double& out) {
 
 PyObject* vector_to_float_list(const std::vector<double>& values) {
     PyObject* list = PyList_New(static_cast<Py_ssize_t>(values.size()));
-    if (!list) {
-        return nullptr;
-    }
+    if (!list) return nullptr;
     for (Py_ssize_t i = 0; i < static_cast<Py_ssize_t>(values.size()); ++i) {
         PyObject* value = PyFloat_FromDouble(values[static_cast<std::size_t>(i)]);
         if (!value) {
@@ -150,14 +138,11 @@ PyObject* vector_to_float_list(const std::vector<double>& values) {
 
 bool parse_levels(PyObject* levels_obj, std::vector<std::vector<double>>& levels) {
     PyObject* outer = PySequence_Fast(levels_obj, "levels must be a sequence");
-    if (!outer) {
-        return false;
-    }
+    if (!outer) return false;
     const Py_ssize_t level_count = PySequence_Fast_GET_SIZE(outer);
     levels.reserve(static_cast<std::size_t>(level_count));
     for (Py_ssize_t h = 0; h < level_count; ++h) {
-        PyObject* inner_obj = PySequence_Fast_GET_ITEM(outer, h);
-        PyObject* inner = PySequence_Fast(inner_obj, "each level must be a sequence");
+        PyObject* inner = PySequence_Fast(PySequence_Fast_GET_ITEM(outer, h), "each level must be a sequence");
         if (!inner) {
             Py_DECREF(outer);
             return false;
@@ -183,9 +168,7 @@ bool parse_levels(PyObject* levels_obj, std::vector<std::vector<double>>& levels
 
 PyObject* levels_to_python(const std::vector<std::vector<double>>& levels) {
     PyObject* outer = PyList_New(static_cast<Py_ssize_t>(levels.size()));
-    if (!outer) {
-        return nullptr;
-    }
+    if (!outer) return nullptr;
     for (Py_ssize_t h = 0; h < static_cast<Py_ssize_t>(levels.size()); ++h) {
         PyObject* inner = vector_to_float_list(levels[static_cast<std::size_t>(h)]);
         if (!inner) {
@@ -218,7 +201,12 @@ bool level_capacity(std::uint64_t k, std::size_t level, std::size_t level_count,
         numerator *= 2ULL;
         denominator *= 3ULL;
     }
-    const std::uint64_t rounded = (numerator + denominator / 2ULL) / denominator;
+    const std::uint64_t half = denominator / 2ULL;
+    if (numerator > U64_MASK - half) {
+        PyErr_SetString(PyExc_OverflowError, "native capacity rounding exceeded; use Python fallback");
+        return false;
+    }
+    const std::uint64_t rounded = (numerator + half) / denominator;
     out = std::max(min_level_capacity, rounded);
     return true;
 }
@@ -228,9 +216,7 @@ bool total_capacity(std::uint64_t k, const std::vector<std::vector<double>>& lev
     std::uint64_t total = 0;
     for (std::size_t h = 0; h < levels.size(); ++h) {
         std::uint64_t cap = 0;
-        if (!level_capacity(k, h, levels.size(), min_level_capacity, cap)) {
-            return false;
-        }
+        if (!level_capacity(k, h, levels.size(), min_level_capacity, cap)) return false;
         if (total > U64_MASK - cap) {
             PyErr_SetString(PyExc_OverflowError, "native total capacity overflow");
             return false;
@@ -246,9 +232,7 @@ bool find_overfull(std::uint64_t k, const std::vector<std::vector<double>>& leve
     found = false;
     for (std::size_t h = 0; h < levels.size(); ++h) {
         std::uint64_t cap = 0;
-        if (!level_capacity(k, h, levels.size(), min_level_capacity, cap)) {
-            return false;
-        }
+        if (!level_capacity(k, h, levels.size(), min_level_capacity, cap)) return false;
         if (levels[h].size() > cap) {
             level_out = h;
             found = true;
@@ -261,13 +245,14 @@ bool find_overfull(std::uint64_t k, const std::vector<std::vector<double>>& leve
 bool compact_level_native(std::vector<std::vector<double>>& levels, std::size_t level,
                           std::uint64_t& rng_state, std::uint64_t& retained,
                           std::uint64_t& compactions, int max_levels) {
-    std::vector<double>& items = levels[level];
-    if (items.size() < 2U) {
+    if (level >= levels.size() || levels[level].size() < 2U) {
         PyErr_SetString(PyExc_RuntimeError, "native attempted to compact a non-compactable level");
         return false;
     }
-    std::sort(items.begin(), items.end());
+    std::vector<double>& items = levels[level];
+    std::stable_sort(items.begin(), items.end());
     const std::size_t old_count = items.size();
+
     std::vector<double> leftover;
     std::size_t start = 0;
     std::size_t stop = items.size();
@@ -282,6 +267,7 @@ bool compact_level_native(std::vector<std::vector<double>>& levels, std::size_t 
     }
     const int offset = next_bit(rng_state);
     std::vector<double> promoted;
+    promoted.reserve((stop - start) / 2U);
     for (std::size_t i = start + static_cast<std::size_t>(offset); i < stop; i += 2U) {
         promoted.push_back(items[i]);
     }
@@ -289,16 +275,25 @@ bool compact_level_native(std::vector<std::vector<double>>& levels, std::size_t 
         PyErr_SetString(PyExc_RuntimeError, "native compaction produced no promoted items");
         return false;
     }
-    items = std::move(leftover);
+
+    const std::size_t leftover_count = leftover.size();
+    levels[level] = std::move(leftover);
     if (level + 2U > levels.size()) {
         if (level + 2U > static_cast<std::size_t>(max_levels)) {
             PyErr_SetString(PyExc_OverflowError, "native sketch exceeds maximum supported level count");
             return false;
         }
+        // Resizing may invalidate references into the outer vector; no reference
+        // to levels[level] is used after this point.
         levels.resize(level + 2U);
     }
     levels[level + 1U].insert(levels[level + 1U].end(), promoted.begin(), promoted.end());
-    retained = retained + items.size() + promoted.size() - old_count;
+    if (retained < old_count) {
+        PyErr_SetString(PyExc_RuntimeError, "native retained-item accounting underflow");
+        return false;
+    }
+    retained -= static_cast<std::uint64_t>(old_count);
+    retained += static_cast<std::uint64_t>(leftover_count + promoted.size());
     if (compactions == U64_MASK) {
         PyErr_SetString(PyExc_OverflowError, "native compaction count overflow");
         return false;
@@ -314,24 +309,17 @@ bool compress_native(std::uint64_t k, std::vector<std::vector<double>>& levels,
     int guard = 0;
     while (true) {
         std::uint64_t capacity = 0;
-        if (!total_capacity(k, levels, min_level_capacity, capacity)) {
-            return false;
-        }
-        if (retained <= capacity) {
-            return true;
-        }
+        if (!total_capacity(k, levels, min_level_capacity, capacity)) return false;
+        if (retained <= capacity) return true;
+
         std::size_t level = 0;
         bool found = false;
-        if (!find_overfull(k, levels, min_level_capacity, level, found)) {
-            return false;
-        }
+        if (!find_overfull(k, levels, min_level_capacity, level, found)) return false;
         if (!found) {
             PyErr_SetString(PyExc_RuntimeError, "native KLL capacity accounting became inconsistent");
             return false;
         }
-        if (!compact_level_native(levels, level, rng_state, retained, compactions, max_levels)) {
-            return false;
-        }
+        if (!compact_level_native(levels, level, rng_state, retained, compactions, max_levels)) return false;
         if (++guard > 10000) {
             PyErr_SetString(PyExc_RuntimeError, "native KLL compaction did not converge");
             return false;
@@ -346,8 +334,8 @@ bool extract_values(PyObject* values_obj, std::vector<double>& values, double& b
     if (PyObject_GetBuffer(values_obj, &view, PyBUF_FORMAT | PyBUF_ND | PyBUF_STRIDES) == 0) {
         const bool one_dimensional = view.ndim == 1;
         const bool contiguous = PyBuffer_IsContiguous(&view, 'C') != 0;
-        const bool doubles = view.itemsize == static_cast<Py_ssize_t>(sizeof(double)) && view.format &&
-                             std::strcmp(view.format, "d") == 0;
+        const bool doubles = view.itemsize == static_cast<Py_ssize_t>(sizeof(double)) &&
+                             view.format && std::strcmp(view.format, "d") == 0;
         if (one_dimensional && contiguous && doubles && view.len >= 0 && view.len % 8 == 0) {
             const std::size_t count = static_cast<std::size_t>(view.len / 8);
             values.resize(count);
@@ -369,9 +357,7 @@ bool extract_values(PyObject* values_obj, std::vector<double>& values, double& b
     }
 
     PyObject* seq = PySequence_Fast(values_obj, "native batch requires a finite sequence or contiguous double buffer");
-    if (!seq) {
-        return false;
-    }
+    if (!seq) return false;
     const Py_ssize_t count = PySequence_Fast_GET_SIZE(seq);
     values.reserve(static_cast<std::size_t>(count));
     for (Py_ssize_t i = 0; i < count; ++i) {
@@ -384,8 +370,8 @@ bool extract_values(PyObject* values_obj, std::vector<double>& values, double& b
             batch_min = batch_max = value;
             has_values = true;
         } else {
-            batch_min = std::min(batch_min, value);
-            batch_max = std::max(batch_max, value);
+            if (value < batch_min) batch_min = value;
+            if (value > batch_max) batch_max = value;
         }
         values.push_back(value);
     }
@@ -395,13 +381,11 @@ bool extract_values(PyObject* values_obj, std::vector<double>& values, double& b
 
 PyObject* py_info(PyObject*, PyObject*) {
     PyObject* result = PyDict_New();
-    if (!result) {
+    if (!result) return nullptr;
+    if (PyDict_SetItemString(result, "available", Py_True) < 0) {
+        Py_DECREF(result);
         return nullptr;
     }
-    PyObject* available = Py_True;
-    Py_INCREF(available);
-    PyDict_SetItemString(result, "available", available);
-    Py_DECREF(available);
 #if KLL_RUNTIME_AVX2
     const char* simd = cpu_has_avx2() ? "avx2-runtime" : "scalar";
 #else
@@ -419,16 +403,16 @@ PyObject* py_info(PyObject*, PyObject*) {
     PyObject* simd_obj = PyUnicode_FromString(simd);
     PyObject* compiler_obj = PyUnicode_FromString(compiler);
     PyObject* api_obj = PyLong_FromLong(1);
-    if (!simd_obj || !compiler_obj || !api_obj) {
+    if (!simd_obj || !compiler_obj || !api_obj ||
+        PyDict_SetItemString(result, "simd", simd_obj) < 0 ||
+        PyDict_SetItemString(result, "compiler", compiler_obj) < 0 ||
+        PyDict_SetItemString(result, "api_version", api_obj) < 0) {
         Py_XDECREF(simd_obj);
         Py_XDECREF(compiler_obj);
         Py_XDECREF(api_obj);
         Py_DECREF(result);
         return nullptr;
     }
-    PyDict_SetItemString(result, "simd", simd_obj);
-    PyDict_SetItemString(result, "compiler", compiler_obj);
-    PyDict_SetItemString(result, "api_version", api_obj);
     Py_DECREF(simd_obj);
     Py_DECREF(compiler_obj);
     Py_DECREF(api_obj);
@@ -439,17 +423,13 @@ PyObject* py_compact_level(PyObject*, PyObject* args) {
     PyObject* items_obj = nullptr;
     int keep_high = 0;
     int offset = 0;
-    if (!PyArg_ParseTuple(args, "Opp:compact_level", &items_obj, &keep_high, &offset)) {
-        return nullptr;
-    }
+    if (!PyArg_ParseTuple(args, "Opp:compact_level", &items_obj, &keep_high, &offset)) return nullptr;
     if (offset != 0 && offset != 1) {
         PyErr_SetString(PyExc_ValueError, "offset must be 0 or 1");
         return nullptr;
     }
     PyObject* seq = PySequence_Fast(items_obj, "items must be a sequence");
-    if (!seq) {
-        return nullptr;
-    }
+    if (!seq) return nullptr;
     const Py_ssize_t count = PySequence_Fast_GET_SIZE(seq);
     std::vector<double> items;
     items.reserve(static_cast<std::size_t>(count));
@@ -466,7 +446,7 @@ PyObject* py_compact_level(PyObject*, PyObject* args) {
         PyErr_SetString(PyExc_ValueError, "at least two items are required");
         return nullptr;
     }
-    std::sort(items.begin(), items.end());
+    std::stable_sort(items.begin(), items.end());
     std::vector<double> leftover;
     std::size_t start = 0;
     std::size_t stop = items.size();
@@ -480,6 +460,7 @@ PyObject* py_compact_level(PyObject*, PyObject* args) {
         }
     }
     std::vector<double> promoted;
+    promoted.reserve((stop - start) / 2U);
     for (std::size_t i = start + static_cast<std::size_t>(offset); i < stop; i += 2U) {
         promoted.push_back(items[i]);
     }
@@ -499,22 +480,15 @@ PyObject* py_compact_level(PyObject*, PyObject* args) {
 PyObject* py_materialize(PyObject*, PyObject* args) {
     PyObject* levels_obj = nullptr;
     PyObject* n_obj = nullptr;
-    if (!PyArg_ParseTuple(args, "OO:materialize", &levels_obj, &n_obj)) {
-        return nullptr;
-    }
-    const unsigned long long expected_n = PyLong_AsUnsignedLongLong(n_obj);
-    if (PyErr_Occurred()) {
-        return nullptr;
-    }
+    if (!PyArg_ParseTuple(args, "OO:materialize", &levels_obj, &n_obj)) return nullptr;
+    const std::uint64_t expected_n = PyLong_AsUnsignedLongLong(n_obj);
+    if (PyErr_Occurred()) return nullptr;
+
     std::vector<std::vector<double>> levels;
-    if (!parse_levels(levels_obj, levels)) {
-        return nullptr;
-    }
+    if (!parse_levels(levels_obj, levels)) return nullptr;
     std::vector<std::pair<double, std::uint64_t>> weighted;
     std::size_t retained = 0;
-    for (const auto& level : levels) {
-        retained += level.size();
-    }
+    for (const auto& level : levels) retained += level.size();
     weighted.reserve(retained);
     for (std::size_t h = 0; h < levels.size(); ++h) {
         if (h >= 64U) {
@@ -522,13 +496,10 @@ PyObject* py_materialize(PyObject*, PyObject* args) {
             return nullptr;
         }
         const std::uint64_t weight = 1ULL << h;
-        for (double value : levels[h]) {
-            weighted.emplace_back(value, weight);
-        }
+        for (double value : levels[h]) weighted.emplace_back(value, weight);
     }
-    Py_BEGIN_ALLOW_THREADS
-    std::sort(weighted.begin(), weighted.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    Py_END_ALLOW_THREADS
+    std::stable_sort(weighted.begin(), weighted.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
 
     PyObject* values = PyList_New(static_cast<Py_ssize_t>(weighted.size()));
     PyObject* prefix = PyList_New(static_cast<Py_ssize_t>(weighted.size()));
@@ -559,7 +530,7 @@ PyObject* py_materialize(PyObject*, PyObject* args) {
         PyList_SET_ITEM(values, i, value_obj);
         PyList_SET_ITEM(prefix, i, prefix_obj);
     }
-    if (cumulative != static_cast<std::uint64_t>(expected_n)) {
+    if (cumulative != expected_n) {
         Py_DECREF(values);
         Py_DECREF(prefix);
         PyErr_SetString(PyExc_RuntimeError, "native materialized KLL weight does not equal n");
@@ -585,9 +556,8 @@ PyObject* py_ingest_batch(PyObject*, PyObject* args) {
     int max_levels = 0;
     if (!PyArg_ParseTuple(args, "OOOOOOOOOii:ingest_batch", &levels_obj, &n_obj, &k_obj, &rng_obj,
                           &compactions_obj, &retained_obj, &min_obj, &max_obj, &values_obj,
-                          &min_level_capacity, &max_levels)) {
-        return nullptr;
-    }
+                          &min_level_capacity, &max_levels)) return nullptr;
+
     std::uint64_t n = PyLong_AsUnsignedLongLong(n_obj);
     if (PyErr_Occurred()) return nullptr;
     const std::uint64_t k = PyLong_AsUnsignedLongLong(k_obj);
@@ -606,16 +576,12 @@ PyObject* py_ingest_batch(PyObject*, PyObject* args) {
     bool has_existing = min_obj != Py_None;
     double min_value = 0.0;
     double max_value = 0.0;
-    if (has_existing) {
-        if (!py_to_double(min_obj, min_value) || !py_to_double(max_obj, max_value)) {
-            return nullptr;
-        }
+    if (has_existing && (!py_to_double(min_obj, min_value) || !py_to_double(max_obj, max_value))) {
+        return nullptr;
     }
 
     std::vector<std::vector<double>> levels;
-    if (!parse_levels(levels_obj, levels)) {
-        return nullptr;
-    }
+    if (!parse_levels(levels_obj, levels)) return nullptr;
     if (levels.empty() || levels.size() > static_cast<std::size_t>(max_levels)) {
         PyErr_SetString(PyExc_ValueError, "invalid native KLL level count");
         return nullptr;
@@ -625,9 +591,7 @@ PyObject* py_ingest_batch(PyObject*, PyObject* args) {
     double batch_min = 0.0;
     double batch_max = 0.0;
     bool has_batch = false;
-    if (!extract_values(values_obj, values, batch_min, batch_max, has_batch)) {
-        return nullptr;
-    }
+    if (!extract_values(values_obj, values, batch_min, batch_max, has_batch)) return nullptr;
     if (values.size() > static_cast<std::size_t>(U64_MASK - n)) {
         PyErr_SetString(PyExc_OverflowError, "total sketch weight exceeds uint64 serialization range");
         return nullptr;
@@ -638,29 +602,23 @@ PyObject* py_ingest_batch(PyObject*, PyObject* args) {
             max_value = batch_max;
             has_existing = true;
         } else {
-            min_value = std::min(min_value, batch_min);
-            max_value = std::max(max_value, batch_max);
+            if (batch_min < min_value) min_value = batch_min;
+            if (batch_max > max_value) max_value = batch_max;
         }
     }
 
-    bool ok = true;
-    Py_BEGIN_ALLOW_THREADS
+    // Keep the GIL here. The loop itself performs no Python object work, but
+    // capacity/invariant failures report through PyErr_* and therefore require
+    // the C API to remain GIL-safe. Bulk speed still comes from moving all
+    // per-item state transitions out of Python bytecode.
     for (double value : values) {
         levels[0].push_back(value);
         ++n;
         ++retained;
         if (!compress_native(k, levels, static_cast<std::uint64_t>(min_level_capacity), max_levels,
                              rng_state, retained, compactions)) {
-            ok = false;
-            break;
+            return nullptr;
         }
-    }
-    Py_END_ALLOW_THREADS
-    if (!ok) {
-        if (!PyErr_Occurred()) {
-            PyErr_SetString(PyExc_RuntimeError, "native KLL batch ingestion failed");
-        }
-        return nullptr;
     }
 
     PyObject* py_levels = levels_to_python(levels);
@@ -668,8 +626,15 @@ PyObject* py_ingest_batch(PyObject*, PyObject* args) {
     PyObject* py_retained = PyLong_FromUnsignedLongLong(retained);
     PyObject* py_rng = PyLong_FromUnsignedLongLong(rng_state);
     PyObject* py_compactions = PyLong_FromUnsignedLongLong(compactions);
-    PyObject* py_min = has_existing ? PyFloat_FromDouble(min_value) : (Py_INCREF(Py_None), Py_None);
-    PyObject* py_max = has_existing ? PyFloat_FromDouble(max_value) : (Py_INCREF(Py_None), Py_None);
+    PyObject* py_min = nullptr;
+    PyObject* py_max = nullptr;
+    if (has_existing) {
+        py_min = PyFloat_FromDouble(min_value);
+        py_max = PyFloat_FromDouble(max_value);
+    } else {
+        py_min = Py_NewRef(Py_None);
+        py_max = Py_NewRef(Py_None);
+    }
     if (!py_levels || !py_n || !py_retained || !py_rng || !py_compactions || !py_min || !py_max) {
         Py_XDECREF(py_levels); Py_XDECREF(py_n); Py_XDECREF(py_retained); Py_XDECREF(py_rng);
         Py_XDECREF(py_compactions); Py_XDECREF(py_min); Py_XDECREF(py_max);
@@ -686,9 +651,8 @@ PyObject* py_ranks_many(PyObject*, PyObject* args) {
     PyObject* prefix_obj = nullptr;
     PyObject* xs_obj = nullptr;
     int inclusive = 1;
-    if (!PyArg_ParseTuple(args, "OOOp:ranks_many", &values_obj, &prefix_obj, &xs_obj, &inclusive)) {
-        return nullptr;
-    }
+    if (!PyArg_ParseTuple(args, "OOOp:ranks_many", &values_obj, &prefix_obj, &xs_obj, &inclusive)) return nullptr;
+
     PyObject* values_seq = PySequence_Fast(values_obj, "values must be a sequence");
     PyObject* prefix_seq = PySequence_Fast(prefix_obj, "prefix must be a sequence");
     PyObject* xs_seq = PySequence_Fast(xs_obj, "xs must be a sequence");
@@ -712,7 +676,7 @@ PyObject* py_ranks_many(PyObject*, PyObject* args) {
             Py_DECREF(values_seq); Py_DECREF(prefix_seq); Py_DECREF(xs_seq);
             return nullptr;
         }
-        const auto p = PyLong_AsUnsignedLongLong(PySequence_Fast_GET_ITEM(prefix_seq, i));
+        const std::uint64_t p = PyLong_AsUnsignedLongLong(PySequence_Fast_GET_ITEM(prefix_seq, i));
         if (PyErr_Occurred()) {
             Py_DECREF(values_seq); Py_DECREF(prefix_seq); Py_DECREF(xs_seq);
             return nullptr;
@@ -720,6 +684,7 @@ PyObject* py_ranks_many(PyObject*, PyObject* args) {
         values.push_back(value);
         prefix.push_back(p);
     }
+
     const Py_ssize_t xs_count = PySequence_Fast_GET_SIZE(xs_seq);
     PyObject* out = PyList_New(xs_count);
     if (!out) {
@@ -758,11 +723,10 @@ PyObject* py_quantiles_many(PyObject*, PyObject* args) {
     double min_value = 0.0;
     double max_value = 0.0;
     if (!PyArg_ParseTuple(args, "OOOOdd:quantiles_many", &values_obj, &prefix_obj, &n_obj, &qs_obj,
-                          &min_value, &max_value)) {
-        return nullptr;
-    }
+                          &min_value, &max_value)) return nullptr;
     const std::uint64_t n = PyLong_AsUnsignedLongLong(n_obj);
     if (PyErr_Occurred()) return nullptr;
+
     PyObject* values_seq = PySequence_Fast(values_obj, "values must be a sequence");
     PyObject* prefix_seq = PySequence_Fast(prefix_obj, "prefix must be a sequence");
     PyObject* qs_seq = PySequence_Fast(qs_obj, "qs must be a sequence");
@@ -786,7 +750,7 @@ PyObject* py_quantiles_many(PyObject*, PyObject* args) {
             Py_DECREF(values_seq); Py_DECREF(prefix_seq); Py_DECREF(qs_seq);
             return nullptr;
         }
-        const auto p = PyLong_AsUnsignedLongLong(PySequence_Fast_GET_ITEM(prefix_seq, i));
+        const std::uint64_t p = PyLong_AsUnsignedLongLong(PySequence_Fast_GET_ITEM(prefix_seq, i));
         if (PyErr_Occurred()) {
             Py_DECREF(values_seq); Py_DECREF(prefix_seq); Py_DECREF(qs_seq);
             return nullptr;
@@ -794,6 +758,7 @@ PyObject* py_quantiles_many(PyObject*, PyObject* args) {
         values.push_back(value);
         prefix.push_back(p);
     }
+
     const Py_ssize_t qcount = PySequence_Fast_GET_SIZE(qs_seq);
     PyObject* out = PyList_New(qcount);
     if (!out) {
@@ -801,7 +766,7 @@ PyObject* py_quantiles_many(PyObject*, PyObject* args) {
         return nullptr;
     }
     for (Py_ssize_t i = 0; i < qcount; ++i) {
-        double q = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(qs_seq, i));
+        const double q = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(qs_seq, i));
         if (PyErr_Occurred() || !std::isfinite(q) || q < 0.0 || q > 1.0) {
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "q must be in [0,1]");
             Py_DECREF(values_seq); Py_DECREF(prefix_seq); Py_DECREF(qs_seq); Py_DECREF(out);
@@ -814,7 +779,8 @@ PyObject* py_quantiles_many(PyObject*, PyObject* args) {
             answer = max_value;
         } else {
             const double target = q * static_cast<double>(n - 1ULL);
-            auto it = std::upper_bound(prefix.begin(), prefix.end(), target,
+            auto it = std::upper_bound(
+                prefix.begin(), prefix.end(), target,
                 [](double lhs, std::uint64_t rhs) { return lhs < static_cast<double>(rhs); });
             std::size_t pos = static_cast<std::size_t>(it - prefix.begin());
             if (pos >= values.size()) pos = values.size() - 1U;

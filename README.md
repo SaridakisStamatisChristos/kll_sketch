@@ -1,36 +1,35 @@
 # KLL Streaming Quantile Sketch
 
-A high-integrity, mergeable **KLL quantile sketch** for Python with deterministic seeded randomness, exact extrema, strict versioned serialization, rank-space accuracy characterization, and zero runtime dependencies.
+A high-integrity, mergeable **KLL quantile sketch** for Python with reproducible seeded randomness, exact extrema, strict versioned serialization, rank-space validation, zero runtime dependencies, and an **optional C++17 native acceleration backend**.
 
-Version **2.0** replaces the original KLL-inspired compactor with a KLL-style hierarchical engine aligned with established implementations: geometric level capacities, lazy compaction, one unbiased parity choice per compaction, explicit effective-`k` tracking across merges, and exact mass conservation.
+Version **3.0** preserves the v2 algorithm, public `KLL` class, and `KLL2` wire format. Native code is an optimization layer: if it is absent or disabled, the same API runs through the canonical pure-Python implementation.
 
-## Why this implementation exists
+## Core guarantees
 
-Approximate quantiles are only useful when their semantics are explicit. This repository therefore treats the following as first-class engineering requirements:
-
-- **normalized rank error**, not value-space error, is the primary accuracy metric;
-- every retained item has exact implicit weight `2**level`;
-- `n == sum(2**level * len(level))` is continuously testable;
-- global minimum and maximum are exact even after compaction;
-- merge history is represented by `min_k` without silently changing configured `k`;
-- repeated queries reuse a cached sorted weighted view;
-- corrupted serialized input fails closed with `SerializationError`;
-- historical `KLL1` payloads remain readable while new sketches emit checksummed `KLL2`.
+- normalized **rank error** is the primary accuracy metric;
+- retained level `h` items have implicit weight `2**h`;
+- `n == sum(2**h * len(level[h]))` is validated structurally;
+- minimum and maximum remain exact after compaction;
+- seeded SplitMix64 compaction is reproducible;
+- `min_k` tracks inherited merge quality without changing configured `k`;
+- repeated queries share a mutation-invalidated weighted view;
+- `KLL2` payloads are checksummed and hostile input fails closed;
+- historical `KLL1` payloads remain readable;
+- native execution is differential-tested against Python down to serialized state.
 
 ## Quick start
 
 ```python
-from kll_sketch import KLL
+from kll_sketch import KLL, native_backend_info
 
 sk = KLL(capacity=200, rng_seed=7331)
 sk.extend([1, 5, 2, 9, 3, 6, 4, 8, 7])
 
-print(sk.n)                    # 9
-print(sk.median())             # 5.0
-print(sk.quantile(0.9))
+print(sk.median())
 print(sk.quantiles_at([.1, .5, .9]))
 print(sk.normalized_rank(5))
 print(sk.min_value, sk.max_value)
+print(native_backend_info())
 ```
 
 ### Merge
@@ -41,49 +40,45 @@ b = KLL(200, rng_seed=2)
 a.extend(range(10_000))
 b.extend(range(10_000, 20_000))
 a.merge(b)
-
 a.validate()
-print(a.n, a.num_retained, a.min_k)
 ```
 
 ### Serialize
 
 ```python
-blob = a.to_bytes()            # writes KLL2 + CRC32
+blob = a.to_bytes()
 restored = KLL.from_bytes(blob)
 assert restored.to_bytes() == blob
 ```
 
-`from_bytes()` also accepts historical `KLL1` snapshots produced by the 1.x series.
+Version 3.0 does **not** introduce a new serialization format.
 
 ## Public API
 
 | API | Meaning |
 | --- | --- |
-| `add(x, weight=1)` | Insert one value or a positive integer-weighted value |
-| `extend(xs)` / `update_many(xs)` | Bulk ingestion |
-| `quantile(q)` | Approximate quantile for `q in [0,1]` |
-| `quantiles_at(qs)` | Batched quantiles using one cached query view |
-| `quantiles(m)` | Interior cuts for `m` equal-mass buckets |
-| `median()` | `quantile(0.5)` |
-| `rank(x, inclusive=True)` | Approximate absolute rank in `[0,n]` |
-| `ranks(xs, inclusive=True)` | Batched rank queries |
-| `normalized_rank(x)` | Approximate rank divided by `n` |
+| `add(x, weight=1)` | Insert one value or positive integer-weighted value |
+| `extend(xs)` / `update_many(xs)` | Bulk ingestion; native when a safe sized sequence/buffer is available |
+| `quantile(q)` / `quantiles_at(qs)` | Single or batched quantile queries |
+| `quantiles(m)` / `median()` | Equal-mass cuts / median |
+| `rank(x)` / `ranks(xs)` | Absolute rank queries |
+| `normalized_rank(x)` | Rank divided by `n` |
 | `cdf(xs)` / `pmf(cuts)` | Distribution queries |
-| `merge(other)` | Merge another sketch into this one |
-| `normalized_rank_error()` | Conventional empirical ~99% rank-error model |
-| `quantile_lower_bound(q)` / `quantile_upper_bound(q)` | Error-model-derived quantile bounds |
-| `to_bytes()` / `from_bytes()` | Strict versioned serialization |
-| `validate()` | Structural invariant checker |
-| `debug_state()` | JSON-friendly internal diagnostics |
+| `merge(other)` | Merge another sketch |
+| `normalized_rank_error()` | Empirical ~99% normalized-rank error model |
+| `quantile_lower_bound/upper_bound` | Error-model-derived bounds |
+| `to_bytes()` / `from_bytes()` | Strict KLL2 serialization / KLL1+KLL2 reading |
+| `validate()` / `debug_state()` | Structural diagnostics |
+| `native_available()` | Is the compiled extension importable? |
+| `native_enabled()` | Is native dispatch active? |
+| `native_backend_info()` | Compiler/SIMD/backend diagnostics |
+| `set_native_enabled(bool)` | Process-local backend switch |
 
-`KLLSketch` remains available as an alias of `KLL` for compatibility.
+`KLLSketch` remains a direct alias of `KLL`.
 
 ## Accuracy model
 
-KLL controls **rank error**. It does not promise a bounded numerical distance between the returned value and an exact quantile value.
-
-This implementation exposes the conventional empirical model used by established KLL implementations:
+KLL controls rank error rather than value-space distance. The implementation exposes the established empirical model:
 
 ```text
 single-sided:  2.296 / k^0.9723
@@ -99,32 +94,82 @@ Representative single-sided values:
 | 400 | 0.68% |
 | 800 | 0.35% |
 
-These are characterization values, not per-instance proofs. The benchmark harness measures realized normalized rank error directly against exact ranks.
+These are characterization values, not per-instance proofs. See [`docs/algorithm.md`](docs/algorithm.md) and [`docs/benchmarks.md`](docs/benchmarks.md).
 
-See [`docs/algorithm.md`](docs/algorithm.md) and [`docs/benchmarks.md`](docs/benchmarks.md).
+## Native acceleration
+
+The optional extension uses the **CPython C API + C++17** directly. There is no pybind11, Cython, NumPy, setuptools, Meson, or scikit-build dependency.
+
+Accelerated operations include:
+
+- transactional bulk ingestion and KLL compaction;
+- contiguous native-`double` buffer ingestion such as `array('d')`;
+- stable level compaction sorting;
+- weighted query-view materialization;
+- batched rank lookup;
+- batched quantile lookup.
+
+The native state machine consumes the same SplitMix64 bits in the same places as Python. CI therefore checks byte-identical `to_bytes()` results, not merely statistically similar quantiles.
+
+### SIMD policy
+
+On GCC/Clang x86 builds, compatible contiguous `double` buffers use a **runtime-dispatched AVX2 finite-value scan** when AVX2 is present. Extrema are then reduced with Python-equivalent comparison/tie semantics so signed zero cannot change serialized state. The extension is not globally compiled with `-mavx2`, so older x86 CPUs retain a scalar path. Non-x86 and current MSVC builds use the scalar scan while retaining the rest of the C++ engine.
+
+```python
+from kll_sketch import native_backend_info
+print(native_backend_info())
+# {'available': True, 'enabled': True, 'compiler': 'gcc',
+#  'simd': 'avx2-runtime', 'api_version': 1}
+```
+
+### Build native in a checkout
+
+```bash
+python -m kll_sketch._native_build
+python -c "from kll_sketch import native_backend_info; print(native_backend_info())"
+```
+
+A C++17 compiler and Python development headers for the active interpreter are required. On Windows use an MSVC developer environment.
+
+### Pure and native wheels
+
+The default wheel stays universal and pure Python:
+
+```bash
+python -m pip wheel .
+# kll_sketch-3.0.0-py3-none-any.whl
+```
+
+Native compilation is explicit:
+
+```bash
+python -m pip wheel . --config-settings native=true
+```
+
+That produces a wheel tagged for the active CPython/platform and containing the extension. Native wheels built this way are platform-local artifacts; normal release portability still comes from the universal pure wheel.
+
+### Force pure Python
+
+```bash
+KLL_SKETCH_DISABLE_NATIVE=1 python your_program.py
+```
+
+or:
+
+```python
+from kll_sketch import set_native_enabled
+set_native_enabled(False)
+```
+
+See [`docs/native.md`](docs/native.md).
 
 ## Weighted updates
 
-Integer-weighted KLL updates are supported. A weight is decomposed into binary level contributions, the same structural idea used by modern weighted KLL implementations. Total represented mass remains exact.
-
-For applications whose statistical assumptions require an ordinary unweighted stream, ingest observations individually. Weighted inputs preserve weight semantics but can produce a different compaction history than literally replaying an interleaved expanded stream.
-
-## Performance architecture
-
-The pure-Python implementation avoids several common hot-path costs:
-
-- no `random.Random` object allocation per compaction;
-- deterministic SplitMix64 RNG state lives inside the sketch;
-- retained-item count is maintained incrementally;
-- level capacities use deterministic integer arithmetic;
-- repeated quantile/rank/CDF calls share a mutation-invalidated sorted cache;
-- batched rank/CDF queries materialize the sketch only once.
-
-There are **no runtime dependencies**.
+Positive integer weights are represented through binary level placement. Total represented mass remains exact. Applications that require the ordinary unweighted KLL statistical model should ingest observations individually; a weighted stream can have a different compaction history from replaying an expanded interleaved stream.
 
 ## Benchmarking
 
-Run a reproducible characterization sweep:
+Pure rank-space characterization:
 
 ```bash
 python benchmarks/bench_kll.py \
@@ -133,17 +178,17 @@ python benchmarks/bench_kll.py \
   --capacities 100 200 400 800 \
   --distributions uniform normal exponential pareto bimodal duplicates \
   --trials 5
-
 python benchmarks/validate_benchmarks.py bench_out
 ```
 
-Artifacts include:
+Native differential/performance gate:
 
-- `accuracy_rank.csv` — realized normalized rank errors;
-- `update_throughput.csv` — updates/sec;
-- `query_latency.csv` — steady-state cached query latency;
-- `merge.csv` — merge timing and retained counts;
-- `footprint.csv` — retained items, level count, serialized size.
+```bash
+python -m kll_sketch._native_build
+python benchmarks/bench_native.py --N 300000 --k 200
+```
+
+The native benchmark aborts if native and Python serialized states differ.
 
 Optional Apache DataSketches comparison:
 
@@ -152,32 +197,30 @@ python -m pip install '.[compare]'
 python benchmarks/compare_datasketches.py --N 1000000 --k 200
 ```
 
-The comparison is intentionally external and optional; `datasketches` is not a runtime dependency.
-
-## Validation
+## Validation and CI
 
 ```bash
 python -m pip install -r kll_sketch/requirements-test.txt
 python -m pytest -q kll_sketch/tests --cov=kll_sketch --cov-report=term-missing
 ```
 
-The deterministic suite covers:
+CI validates:
 
-- exact mode;
-- weight conservation;
-- exact extrema;
-- merge trees and mixed `k`;
-- rank/CDF/PMF semantics;
-- cache invalidation;
-- adversarial sorted/reverse/duplicate/extreme streams;
-- KLL2 corruption and checksum rejection;
-- KLL1 backward reading;
-- byte-stable KLL2 round trips;
-- property-based invariant and rank-error tests when Hypothesis is installed.
+- pure Python on Linux/macOS/Windows × Python 3.10–3.14;
+- native C++ on Linux/macOS/Windows across representative supported Python versions;
+- native/Python byte-level state parity;
+- invalid-input fallback and one-shot iterator safety;
+- signed-zero stability;
+- enormous-rank (`n > 2**53`) query fallback;
+- universal pure wheel build/install;
+- platform native wheel build/install;
+- no-index pure source installation;
+- rank-space regression gates;
+- native speed regression gates.
 
-## Packaging and offline builds
+## Offline pure installation
 
-The source tree keeps a small in-tree PEP 517 backend with **no build-time third-party dependencies**. This allows source installation without contacting a package index:
+The in-tree PEP 517 backend has no third-party build dependency. A normal source install remains index-independent:
 
 ```bash
 python -m venv .venv
@@ -185,17 +228,17 @@ python -m venv .venv
 PIP_NO_INDEX=1 python -m pip install --no-index .
 ```
 
-Runtime remains pure Python and dependency-free. Distribution metadata is emitted as Core Metadata 2.4 so SPDX `License-Expression` and `License-File` fields are standards-correct.
+Native compilation is always explicit.
 
-## Compatibility notes for 2.0
+## Compatibility notes for 3.0
 
-- Python 3.10+ is supported.
-- `to_bytes()` now emits `KLL2`; `KLL1` remains readable.
-- configured `k` no longer gets overwritten merely because another sketch with smaller `k` is merged; `min_k` tracks inherited estimation quality separately.
-- exact `q=0` and `q=1` answers come from separately tracked extrema.
-- benchmark accuracy is now rank-based rather than absolute value error.
-
-See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+- Python 3.10+ remains supported.
+- `KLL`/`KLLSketch` identity is unchanged.
+- KLL2 serialization is unchanged; KLL1 remains readable.
+- Native acceleration is optional and removable without losing functionality.
+- unsupported native inputs replay through the canonical Python path;
+- quantile lookup falls back to Python when cumulative integer ranks exceed exact binary64 integer range (`2**53`);
+- default wheels remain `py3-none-any`.
 
 ## References
 

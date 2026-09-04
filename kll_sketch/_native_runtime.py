@@ -22,6 +22,7 @@ _DISABLED_BY_ENV = os.environ.get("KLL_SKETCH_DISABLE_NATIVE", "").strip().lower
 }
 _ENABLED = _native_impl is not None and not _DISABLED_BY_ENV
 _INSTALLED = False
+_MAX_EXACT_DOUBLE_INTEGER = 1 << 53
 
 _ORIGINAL_EXTEND = KLL.extend
 _ORIGINAL_COMPACT_LEVEL = KLL._compact_level
@@ -69,13 +70,19 @@ def native_backend_info() -> dict[str, Any]:
 
 
 def _candidate_for_native_batch(xs: object) -> bool:
+    """Return whether native probing cannot consume a one-shot iterator.
+
+    ``PySequence_Fast`` may materialize generic iterables. Restrict dispatch to
+    objects with both length and indexed access (plus buffer-capable sequences),
+    so a rejected native attempt can safely replay through Python unchanged.
+    """
     if isinstance(xs, (str, bytes, bytearray)):
         return False
     try:
         len(xs)  # type: ignore[arg-type]
     except (TypeError, AttributeError):
         return False
-    return True
+    return callable(getattr(xs, "__getitem__", None))
 
 
 def _native_extend(self: KLL, xs: object) -> None:
@@ -164,24 +171,31 @@ def _native_ranks(self: KLL, xs, *, inclusive: bool = True):
     values, prefix = self._query_view()
     try:
         return _native_impl.ranks_many(values, prefix, xs, inclusive)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _ORIGINAL_RANKS(self, xs, inclusive=inclusive)
 
 
 def _native_quantiles_from_probabilities(self: KLL, qs: list[float]):
-    if not native_enabled():
+    # Python's int/float ordering keeps exact semantics beyond 2**53. The C++
+    # fast path represents the floating target in binary64, so retain the
+    # reference path for sketches whose cumulative ranks exceed exact-double
+    # integer range rather than introduce an enormous-n edge divergence.
+    if not native_enabled() or self._n > _MAX_EXACT_DOUBLE_INTEGER:
         return _ORIGINAL_QUANTILES_FROM_PROBABILITIES(self, qs)
     self._require_nonempty()
     assert _native_impl is not None
     values, prefix = self._query_view()
-    return _native_impl.quantiles_many(
-        values,
-        prefix,
-        self._n,
-        qs,
-        self.min_value,
-        self.max_value,
-    )
+    try:
+        return _native_impl.quantiles_many(
+            values,
+            prefix,
+            self._n,
+            qs,
+            self.min_value,
+            self.max_value,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return _ORIGINAL_QUANTILES_FROM_PROBABILITIES(self, qs)
 
 
 def install_native_acceleration() -> None:

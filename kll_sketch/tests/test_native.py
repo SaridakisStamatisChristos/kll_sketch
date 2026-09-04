@@ -69,6 +69,22 @@ def test_native_contiguous_double_buffer_matches_python() -> None:
 
 
 @pytest.mark.skipif(not native_available(), reason="optional native extension not built")
+def test_native_signed_zero_buffer_preserves_exact_python_state() -> None:
+    # std::sort and SIMD min/max can reorder/equalize signed zero in ways Python
+    # does not. v3 deliberately uses stable sorting and first-value extrema
+    # semantics, so this is a byte-level regression test rather than ~=.
+    data = array("d", [0.0, -0.0, 2.0, -2.0] * 20_000)
+    try:
+        pure = _build(data, enabled=False, k=128, seed=117)
+        native = _build(data, enabled=True, k=128, seed=117)
+        assert native.to_bytes() == pure.to_bytes()
+        assert math.copysign(1.0, native.min_value) == math.copysign(1.0, pure.min_value)
+        assert math.copysign(1.0, native.max_value) == math.copysign(1.0, pure.max_value)
+    finally:
+        set_native_enabled(True)
+
+
+@pytest.mark.skipif(not native_available(), reason="optional native extension not built")
 def test_native_range_batch_matches_python() -> None:
     data = range(-25_000, 25_000)
     try:
@@ -89,6 +105,45 @@ def test_native_invalid_batch_replays_python_partial_progress_semantics() -> Non
         assert sketch.n == 2
         assert sketch.min_value == 1.0
         assert sketch.max_value == 2.0
+        sketch.validate()
+    finally:
+        set_native_enabled(True)
+
+
+@pytest.mark.skipif(not native_available(), reason="optional native extension not built")
+def test_sized_one_shot_iterable_is_not_consumed_by_native_probe() -> None:
+    class SizedOneShot:
+        def __init__(self) -> None:
+            self._used = False
+
+        def __len__(self) -> int:
+            return 4
+
+        def __iter__(self):
+            if self._used:
+                return iter(())
+            self._used = True
+            return iter((1.0, 2.0, 3.0, 4.0))
+
+    try:
+        set_native_enabled(True)
+        sketch = KLL(128, 3)
+        sketch.extend(SizedOneShot())
+        assert sketch.n == 4
+        assert sketch.quantiles_at([0.0, 0.5, 1.0]) == [1.0, 2.0, 4.0]
+    finally:
+        set_native_enabled(True)
+
+
+@pytest.mark.skipif(not native_available(), reason="optional native extension not built")
+def test_enormous_weight_quantile_uses_exact_python_rank_comparison() -> None:
+    try:
+        set_native_enabled(True)
+        sketch = KLL(200, 17)
+        sketch.add(1.0, 1 << 54)
+        sketch.add(2.0)
+        assert sketch.n > 1 << 53
+        assert sketch.quantile(0.5) == 1.0
         sketch.validate()
     finally:
         set_native_enabled(True)

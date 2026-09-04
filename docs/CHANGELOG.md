@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.0.0
+
+### Native acceleration
+
+- Added an optional CPython C API / C++17 acceleration module without changing the public `KLL` class.
+- Added transactional native bulk ingestion that mirrors the Python KLL state machine, including SplitMix64 compaction-bit consumption.
+- Added native stable compaction sorting, weighted query-view materialization, batched rank lookup, and batched quantile lookup.
+- Added contiguous native-`double` buffer ingestion.
+- Added runtime-dispatched AVX2 finite-value scanning on supported GCC/Clang x86 builds with a scalar fallback.
+- Preserved Python-equivalent extrema and tie behavior, including signed-zero stability.
+- Added runtime controls: `native_available`, `native_enabled`, `native_backend_info`, and `set_native_enabled`.
+- Added `KLL_SKETCH_DISABLE_NATIVE=1` for process-level forced pure-Python operation.
+- Restricted native batch probing to replay-safe indexed/sized inputs so one-shot iterators are never consumed by a failed optimization attempt.
+- Added exact Python fallback for quantile target comparisons when `n > 2**53`.
+
+### Packaging
+
+- Preserved the default universal `py3-none-any` pure-Python wheel.
+- Added explicit native wheel builds via `--config-settings native=true`.
+- Added a dependency-free native compiler driver using the active interpreter's `sysconfig` paths.
+- Kept native source/build helpers out of runtime wheels.
+- Kept normal source installation fully no-index capable and free of third-party build dependencies.
+
+### Validation / CI
+
+- Added Linux/macOS/Windows native build and differential-test coverage across representative supported Python versions.
+- Added byte-identical native/Python serialization parity tests for list, range, and contiguous-double ingestion.
+- Added signed-zero, invalid-input replay, one-shot iterator, enormous-rank, class-identity, and copy-contract regressions.
+- Added a native speed benchmark that fails before reporting performance if serialized state diverges from Python.
+- Added pure-wheel and native-wheel install tests outside the source tree.
+- Kept the existing 15-job pure-Python OS/Python compatibility matrix and 90% core-Python coverage gate separate from native tooling coverage.
+
+### Compatibility
+
+- `KLL2` serialization is unchanged. `KLL1` remains readable.
+- `KLLSketch` remains a direct alias of `KLL`.
+- Weighted updates, merge semantics, `min_k`, error reporting, and the pure-Python algorithm are unchanged.
+- Native acceleration is optional: removing or disabling the extension changes performance, not functionality.
+
 ## 2.0.0
 
 ### Algorithm
