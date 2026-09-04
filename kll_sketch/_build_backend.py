@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import base64
 from hashlib import sha256
+import os
 from pathlib import Path
 import shutil
+import sys
+import sysconfig
 import tarfile
 import tempfile
 from typing import Iterable, Mapping
@@ -17,6 +20,31 @@ PACKAGE_NAME = str(PROJECT_METADATA["name"])
 _VERSION = str(PROJECT_METADATA["version"])
 _NORMALIZED_NAME = PACKAGE_NAME.replace("-", "_")
 _DIST_INFO = f"{_NORMALIZED_NAME}-{_VERSION}.dist-info"
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, (list, tuple)):
+        return any(_truthy(item) for item in value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _native_requested(config_settings: Mapping[str, object] | None) -> bool:
+    if _truthy(os.environ.get("KLL_SKETCH_BUILD_NATIVE", "")):
+        return True
+    if not config_settings:
+        return False
+    return any(
+        key in config_settings and _truthy(config_settings[key])
+        for key in ("native", "--native", "kll-native")
+    )
+
+
+def _wheel_tag(native: bool) -> str:
+    if not native:
+        return "py3-none-any"
+    interpreter = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+    return f"{interpreter}-{interpreter}-{platform}"
 
 
 def _build_metadata_text() -> str:
@@ -61,11 +89,14 @@ def _build_metadata_text() -> str:
     return "\n".join(lines) + "\n" + readme_path.read_text(encoding="utf-8")
 
 
-def _write_metadata(dist_info: Path) -> None:
+def _write_metadata(dist_info: Path, *, tag: str = "py3-none-any", pure: bool = True) -> None:
     dist_info.mkdir(parents=True, exist_ok=True)
     (dist_info / "METADATA").write_text(_build_metadata_text(), encoding="utf-8")
     (dist_info / "WHEEL").write_text(
-        "Wheel-Version: 1.0\nGenerator: kll-sketch self-hosted backend\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        "Wheel-Version: 1.0\n"
+        "Generator: kll-sketch self-hosted backend\n"
+        f"Root-Is-Purelib: {'true' if pure else 'false'}\n"
+        f"Tag: {tag}\n",
         encoding="utf-8",
     )
     license_info = PROJECT_METADATA.get("license", {})
@@ -97,21 +128,29 @@ def build_wheel(
     config_settings: Mapping[str, object] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
-    del config_settings, metadata_directory
+    del metadata_directory
+    native = _native_requested(config_settings)
+    tag = _wheel_tag(native)
     with tempfile.TemporaryDirectory() as tmpdir:
         wheel_root = Path(tmpdir)
+        package_root = wheel_root / "kll_sketch"
         shutil.copytree(
             PROJECT_ROOT / "kll_sketch",
-            wheel_root / "kll_sketch",
+            package_root,
             ignore=shutil.ignore_patterns(
                 "__pycache__", "*.pyc", "*.pyo", "tests", "requirements-test.txt", "LICENSE",
-                "_build_backend.py", "_metadata.py",
+                "_build_backend.py", "_metadata.py", "_native_build.py", "_native.cpp", "_native*.so", "_native*.pyd",
             ),
         )
+        if native:
+            from ._native_build import build_native
+
+            build_native(package_root)
         dist_info = wheel_root / _DIST_INFO
-        _write_metadata(dist_info)
+        _write_metadata(dist_info, tag=tag, pure=not native)
         _write_record(dist_info, wheel_root)
-        wheel_path = Path(wheel_directory) / f"{_NORMALIZED_NAME}-{_VERSION}-py3-none-any.whl"
+        wheel_path = Path(wheel_directory) / f"{_NORMALIZED_NAME}-{_VERSION}-{tag}.whl"
+        wheel_path.parent.mkdir(parents=True, exist_ok=True)
         with ZipFile(wheel_path, "w", ZIP_DEFLATED) as zf:
             for file in _iter_files(wheel_root):
                 zf.write(file, file.relative_to(wheel_root).as_posix())
@@ -122,9 +161,9 @@ def prepare_metadata_for_build_wheel(
     metadata_directory: str,
     config_settings: Mapping[str, object] | None = None,
 ) -> str:
-    del config_settings
+    native = _native_requested(config_settings)
     dist_info = Path(metadata_directory) / _DIST_INFO
-    _write_metadata(dist_info)
+    _write_metadata(dist_info, tag=_wheel_tag(native), pure=not native)
     return dist_info.name
 
 
@@ -140,8 +179,13 @@ def build_sdist(sdist_directory: str, config_settings: Mapping[str, object] | No
         for directory in ["kll_sketch", "docs", "benchmarks", "tests"]:
             source = PROJECT_ROOT / directory
             if source.exists():
-                shutil.copytree(source, sdist_root / directory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+                shutil.copytree(
+                    source,
+                    sdist_root / directory,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "_native*.so", "_native*.pyd"),
+                )
         archive = Path(sdist_directory) / f"{_NORMALIZED_NAME}-{_VERSION}.tar.gz"
+        Path(sdist_directory).mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tf:
             tf.add(sdist_root, arcname=sdist_root.name)
         return archive.name
