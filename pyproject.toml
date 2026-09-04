@@ -5,33 +5,24 @@ backend-path = ["."]
 
 [project]
 name = "kll-sketch"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = [
-  "version",
-  "description",
-  "readme",
-  "license",
-  "authors",
-  "keywords",
-  "classifiers",
-  "urls",
-  "optional-dependencies",
+  "version", "description", "readme", "license", "authors", "keywords",
+  "classifiers", "urls", "optional-dependencies",
 ]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["kll_sketch/tests", "tests"]
-markers = [
-  "benchmark: performance benchmarks (opt-in)",
-]
-filterwarnings = [
-  "error",
-]
+markers = ["benchmark: performance benchmarks (opt-in)"]
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true
 source = ["kll_sketch"]
+omit = ["kll_sketch/_build_backend.py", "kll_sketch/_metadata.py", "kll_sketch/tests/*"]
 
 [tool.coverage.report]
 precision = 2
 show_missing = true
+fail_under = 90

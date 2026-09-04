@@ -1,109 +1,117 @@
-"""Property-based tests exercising probabilistic guarantees of :mod:`kll_sketch`."""
+"""Property and randomized differential-style tests for the KLL core."""
 from __future__ import annotations
 
 import bisect
-from typing import Sequence
-
 import math
+import random
 
 import pytest
+
+from kll_sketch import KLL
 
 hypothesis = pytest.importorskip("hypothesis")
 st = hypothesis.strategies
 given = hypothesis.given
 settings = hypothesis.settings
 
-from kll_sketch import KLL
+
+def _rank_error(ordered: list[float], estimate: float, q: float) -> float:
+    target = q * (len(ordered) - 1)
+    lo = bisect.bisect_left(ordered, estimate)
+    hi = bisect.bisect_right(ordered, estimate) - 1
+    if target < lo:
+        return (lo - target) / len(ordered)
+    if target > hi:
+        return (target - hi) / len(ordered)
+    return 0.0
 
 
-def _sorted_list(seq: Sequence[float]) -> list[float]:
-    ordered = list(seq)
-    ordered.sort()
-    return ordered
+@given(
+    st.lists(
+        st.floats(min_value=-1e9, max_value=1e9, allow_nan=False, allow_infinity=False),
+        min_size=1,
+        max_size=3000,
+    )
+)
+@settings(max_examples=80, deadline=None)
+def test_structural_invariants_hold(xs: list[float]) -> None:
+    sketch = KLL(capacity=128, rng_seed=7331)
+    sketch.extend(xs)
+    sketch.validate()
+    assert sketch.min_value == min(xs)
+    assert sketch.max_value == max(xs)
+    assert sketch.num_retained <= sketch.debug_state()["total_capacity"]
 
 
 @given(
     st.lists(
         st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False),
         min_size=1,
-        max_size=2_000,
+        max_size=2500,
     ),
-    st.floats(min_value=0.0, max_value=1.0),
+    st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
 )
-@settings(max_examples=75, deadline=None)
-def test_quantile_rank_error_is_bounded(xs: list[float], q: float) -> None:
-    sketch = KLL(capacity=256)
+@settings(max_examples=80, deadline=None)
+def test_quantile_rank_error_is_bounded_coarsely(xs: list[float], q: float) -> None:
+    sketch = KLL(capacity=200, rng_seed=19)
     sketch.extend(xs)
-
-    estimate = sketch.quantile(q)
-    ordered = _sorted_list(xs)
-    target_rank = q * (len(xs) - 1)
-
-    # Compute the realised rank interval for the estimate in the truth data.
-    left = bisect.bisect_left(ordered, estimate)
-    right = bisect.bisect_right(ordered, estimate)
-
-    # Allow a tolerance proportional to 1/k (here ~0.004) plus a small constant
-    # for discrete datasets.  The assert keeps the property coarse but useful.
-    slack = max(3.0, 0.04 * len(xs))
-    assert left <= target_rank + slack
-    assert right >= target_rank - slack
+    ordered = sorted(xs)
+    error = _rank_error(ordered, sketch.quantile(q), q)
+    # A deterministic per-example property gate. The release characterization
+    # harness provides the tighter p95/p99 empirical envelope.
+    assert error <= 0.05
 
 
 @given(
-    st.lists(
-        st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False),
-        min_size=0,
-        max_size=1_000,
-    ),
-    st.lists(
-        st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False),
-        min_size=0,
-        max_size=1_000,
-    ),
+    st.lists(st.integers(-10000, 10000), min_size=0, max_size=1500),
+    st.lists(st.integers(-10000, 10000), min_size=0, max_size=1500),
 )
 @settings(max_examples=60, deadline=None)
-def test_merge_matches_extending(xs: list[float], ys: list[float]) -> None:
+def test_merge_preserves_mass_extrema_and_query_order(xs: list[int], ys: list[int]) -> None:
+    left = KLL(128, 1)
+    right = KLL(128, 2)
+    left.extend(xs)
+    right.extend(ys)
+    left.merge(right)
+    left.validate()
     combined = xs + ys
-
-    serial = KLL(capacity=128)
-    serial.extend(combined)
-
-    a = KLL(capacity=128)
-    b = KLL(capacity=128)
-    a.extend(xs)
-    b.extend(ys)
-    a.merge(b)
-
-    if not combined:
-        assert serial.size() == 0
-        assert a.size() == 0
-        assert b.size() == 0
-        return
-
-    for q in [0.0, 0.1, 0.5, 0.9, 1.0]:
-        assert math.isclose(a.quantile(q), serial.quantile(q), rel_tol=0.05, abs_tol=0.05)
+    assert left.n == len(combined)
+    if combined:
+        assert left.min_value == min(combined)
+        assert left.max_value == max(combined)
+        qs = [0.0, 0.1, 0.5, 0.9, 1.0]
+        answers = left.quantiles_at(qs)
+        assert answers == sorted(answers)
 
 
-@given(
-    st.lists(
-        st.floats(min_value=-1e4, max_value=1e4, allow_nan=False, allow_infinity=False),
-        min_size=0,
-        max_size=1_500,
-    )
-)
+@given(st.lists(st.integers(-1000, 1000), min_size=0, max_size=2000))
 @settings(max_examples=60, deadline=None)
-def test_serialization_roundtrip_matches_levels(xs: list[float]) -> None:
-    sketch = KLL(capacity=200)
+def test_serialization_is_byte_stable(xs: list[int]) -> None:
+    sketch = KLL(200, 123456789)
     sketch.extend(xs)
     payload = sketch.to_bytes()
     restored = KLL.from_bytes(payload)
-
-    assert restored.size() == sketch.size()
+    restored.validate()
+    assert restored.to_bytes() == payload
     assert restored._levels == sketch._levels
 
-    if xs:
-        for q in [0.0, 0.25, 0.5, 0.75, 1.0]:
-            restored_q = restored.quantile(q)
-            sketch_q = sketch.quantile(q)
-            assert math.isclose(restored_q, sketch_q, rel_tol=1e-9, abs_tol=1e-9)
+
+def test_merge_tree_characterization_smoke() -> None:
+    rng = random.Random(42)
+    xs = [rng.random() for _ in range(50_000)]
+    shards = []
+    for i in range(8):
+        shard = KLL(200, i + 1)
+        shard.extend(xs[i::8])
+        shards.append(shard)
+    while len(shards) > 1:
+        nxt = []
+        for i in range(0, len(shards), 2):
+            shards[i].merge(shards[i + 1])
+            nxt.append(shards[i])
+        shards = nxt
+    merged = shards[0]
+    merged.validate()
+    ordered = sorted(xs)
+    for q in [0.01, 0.1, 0.5, 0.9, 0.99]:
+        assert _rank_error(ordered, merged.quantile(q), q) < 0.05

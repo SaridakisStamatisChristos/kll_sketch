@@ -1,69 +1,77 @@
-# Operational Guide
+# Operational guide
 
-This guide summarizes the day-2 operational practices for running the KLL sketch in production services and batch pipelines.
+This library is an in-process sketch, not a service. Operational concerns therefore center on input rate, retained footprint, merge topology, query latency, serialization compatibility, and accuracy configuration.
 
-## Monitoring & Observability
+## Metrics worth exposing
 
-### Key service level indicators
-- **Ingestion throughput**: items/second (overall and per tenant). Track moving averages and high-water marks to detect ingestion stalls.
-- **Sketch merge latency**: wall-clock latency and failure rate for merge jobs. Watch for sustained increases (>2× baseline) which indicate undersized capacity.
-- **Quantile query latency**: P50/P95/P99 latency per query type (`quantile`, `quantiles`, `rank`).
-- **Serialized blob size**: mean and max payload size emitted by `to_bytes()`. Sudden jumps usually mean skewed data or capacity misconfiguration.
-- **Compaction counters**: number of compactions per level. Rising compaction frequency implies either a bursty workload or an undersized `capacity`.
+For long-lived sketches, record at least:
 
-### Recommended instrumentation
-- Wrap ingestion entry points (e.g., `add`, `extend`) and query methods with metrics (`Counter`/`Histogram`). Expose via Prometheus or your platform’s native telemetry.
-- Log sketch metadata at debug level: `capacity`, `size`, level configuration, deterministic seed. Mask PII, logging only aggregates.
-- Emit structured events when merges occur, including source shard identifiers and duration.
-- Sample serialized blobs and validate round-trips in background tasks to catch corruption early.
+- input mass `n`;
+- configured `k` and effective `min_k`;
+- `num_retained`;
+- number of levels and per-level sizes from `debug_state()`;
+- compaction count;
+- update throughput;
+- merge latency;
+- query p50/p95/p99;
+- serialized byte size;
+- `SerializationError` count on ingesting persisted sketches.
 
-### Alerting policies
-- **Ingestion stalled**: alert when ingestion throughput drops to zero for more than 1 minute while upstream traffic persists.
-- **Merge backlog**: alert when merge queue length exceeds 2× normal baseline for 5 consecutive intervals.
-- **Query SLO breach**: alert when P95 query latency exceeds the agreed SLO (e.g., 50 ms) for 3 consecutive intervals.
-- **Serialization errors**: alert on any deserialization failures or checksum mismatches.
+Do not log retained values when they may contain sensitive data. Structural diagnostics are usually sufficient.
 
-### Dashboards & diagnostics
-- Chart ingestion throughput, query latency, and serialized blob sizes on a single operational dashboard.
-- Maintain a table of per-level buffer sizes and compaction counts to aid debugging.
-- Surface release version, git SHA, and configuration flags in dashboard annotations.
+## Choosing k
 
-## Capacity & Configuration Management
-- Size `capacity` based on required rank error ε using `ε ≈ 1 / capacity`. Double the capacity if you observe compaction hot spots or serialized blobs exceeding transport limits.
-- For workloads with heavy merges, align shard capacities; a single small shard can dominate error.
-- Document default seeds and level configuration in configuration management. Keep environment-specific overrides in version control.
+Use `normalized_rank_error()` as the engineering starting point rather than the old rule of thumb `epsilon ~= 1/k`.
 
-## Upgrade Playbook
+Representative single-sided characterization values are approximately:
 
-1. **Review release notes**
-   - Read `CHANGELOG.md` for breaking changes, new features, and migration steps.
-   - Check dependency bumps, especially the minimum supported Python version and `setuptools` constraints.
+| k | normalized rank error |
+|---:|---:|
+| 100 | 2.61% |
+| 200 | 1.33% |
+| 400 | 0.68% |
+| 800 | 0.35% |
 
-2. **Stage the upgrade**
-   - Pin the target version in your dependency management tool and deploy to a staging environment.
-   - Run the full pytest suite plus representative workload benchmarks (`benchmarks/bench_kll.py`) on staging data.
-   - Validate that serialized blobs created by the previous version deserialize correctly with the new release (forwards compatibility) and vice versa (backwards compatibility when rolling back).
+Measure your actual distributions and merge topology with `benchmarks/bench_kll.py` before setting production SLOs.
 
-3. **Production rollout**
-   - Perform a canary deployment (5–10% traffic) and monitor ingestion throughput, query latency, and error rates for at least one compaction window.
-   - If metrics remain within SLOs, proceed with progressive rollout to all shards or services.
+## Merge topology
 
-4. **Rollback procedure**
-   - Maintain the previous version pinned and ready for redeploy.
-   - Because serialization is version-stable, downgrades are safe provided no breaking schema change is noted in the changelog. Always confirm with staged rollback tests.
-   - After rollback, clear metrics annotations and document the incident.
+Balanced merge trees usually provide a more predictable operational profile than repeatedly merging every shard into one hot accumulator.
 
-5. **Post-upgrade validation**
-   - Confirm dashboards show the new version identifiers.
-   - Update operational runbooks with any new configuration flags or behaviours introduced in the release.
+Monitor `min_k`: it records lower-`k` estimation history inherited from merged sketches. A destination can have configured `k=400` while `min_k=100`; storage continues using 400, but the inherited error model must remain conservative at 100.
 
-## Incident Response Checklist
-- Capture failing serialized blobs and store them with timestamps and shard identifiers.
-- Dump per-level buffer states via `KLL.debug_state()` (if enabled) or the equivalent introspection helper for forensic analysis.
-- Reconstruct workloads that triggered failures using recorded input batches and replay them in a sandbox before patching production.
+Avoid treating a larger destination `k` as a way to recover information already discarded by a lower-`k` estimation-mode source.
 
-## Documentation & Runbook Hygiene
-- Store this guide alongside other operational runbooks in your organization’s knowledge base.
-- Schedule quarterly reviews to update thresholds, metrics, and playbooks in line with observed production behaviour.
-- When onboarding new services, link this document from their service runbooks to ensure consistent operational standards.
+## Serialization rollout
 
+Version 2 **reads KLL1 and KLL2 but writes KLL2**.
+
+This has an important deployment consequence:
+
+- upgrade readers before writers if persisted blobs cross process/version boundaries;
+- once a v2 writer emits KLL2, a v1 reader cannot consume that blob;
+- rollback from v2 to v1 therefore requires either suppressing KLL2 writes during the canary or keeping v2 readers available for persisted state.
+
+Never assume bidirectional wire compatibility merely because the new version can read old snapshots.
+
+## Corruption handling
+
+Treat `SerializationError` as a data-integrity event. Preserve the failing blob and surrounding metadata for forensic analysis, but do not repeatedly retry the same corrupt payload.
+
+KLL2 validates length, checksum, flags, level bounds, retained mass, extrema, and trailing bytes before accepting state.
+
+## Upgrade playbook
+
+1. Run the exact release commit through CI.
+2. Run `benchmarks/bench_kll.py` on representative production-like data.
+3. Verify KLL1 fixtures from the currently deployed version load successfully in v2.
+4. Canary v2 readers before enabling KLL2 persistence.
+5. Observe update/query latency, `num_retained`, serialized bytes, `min_k`, and error-model values.
+6. Enable v2 writers only after all consumers are KLL2-capable.
+7. Keep raw benchmark artifacts and release hashes with the deployment record.
+
+## Incident diagnostics
+
+`debug_state()` is intentionally JSON-friendly. Capture it alongside application version, git SHA, workload identity, and serialized blob size.
+
+For reproducibility, also record the configured seed when deterministic replay matters. KLL2 stores RNG state, so a restored sketch continues from the same pseudo-random stream.

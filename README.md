@@ -1,192 +1,207 @@
-Here’s a polished, stars-friendly **README.md** you can paste on your repo’s front page. I tailored it for your project and authorship.
+# KLL Streaming Quantile Sketch
 
+A high-integrity, mergeable **KLL quantile sketch** for Python with deterministic seeded randomness, exact extrema, strict versioned serialization, rank-space accuracy characterization, and zero runtime dependencies.
 
-# KLL Streaming Quantile Sketch (Python)
-Fast, mergeable **KLL** sketch for streaming quantiles — deterministic, zero deps, production-ready.
+Version **2.0** replaces the original KLL-inspired compactor with a KLL-style hierarchical engine aligned with established implementations: geometric level capacities, lazy compaction, one unbiased parity choice per compaction, explicit effective-`k` tracking across merges, and exact mass conservation.
 
-[![CI](https://github.com/SaridakisStamatisChristos/kll_sketch/actions/workflows/ci.yml/badge.svg)](https://github.com/SaridakisStamatisChristos/kll_sketch/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/SaridakisStamatisChristos/kll_sketch/branch/main/graph/badge.svg)](https://codecov.io/gh/SaridakisStamatisChristos/kll_sketch)
+## Why this implementation exists
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+Approximate quantiles are only useful when their semantics are explicit. This repository therefore treats the following as first-class engineering requirements:
 
-> Author: **Stamatis-Christos Saridakis**
+- **normalized rank error**, not value-space error, is the primary accuracy metric;
+- every retained item has exact implicit weight `2**level`;
+- `n == sum(2**level * len(level))` is continuously testable;
+- global minimum and maximum are exact even after compaction;
+- merge history is represented by `min_k` without silently changing configured `k`;
+- repeated queries reuse a cached sorted weighted view;
+- corrupted serialized input fails closed with `SerializationError`;
+- historical `KLL1` payloads remain readable while new sketches emit checksummed `KLL2`.
 
----
+## Quick start
 
-## ✨ Features
-- **Accurate ε-quantiles** under tight memory bounds (KLL algorithm)
-- **Deterministic compaction** (parity sampling) + **weight conservation**
-- **Weighted ingestion** via `add(x, weight)` for aggregated data
-- **Mergeable** sketches for distributed/parallel ingestion
-- **Serializable** (`to_bytes` / `from_bytes`)
-- **Convenience helpers** such as `quantiles(m)` and `quantiles_at(qs)` for
-  evenly spaced or ad-hoc cuts
-- **Zero dependencies**, Python 3.9+ (self-hosted build backend)
-
----
-
-## 🚀 Quick Start
 ```python
 from kll_sketch import KLL
 
-sk = KLL(capacity=200)
+sk = KLL(capacity=200, rng_seed=7331)
 sk.extend([1, 5, 2, 9, 3, 6, 4, 8, 7])
 
-print("n =", sk.size())
-print("median ≈", sk.median())
-print("q(0.9) ≈", sk.quantile(0.9))
-print("quartiles ≈", sk.quantiles(4))
+print(sk.n)                    # 9
+print(sk.median())             # 5.0
+print(sk.quantile(0.9))
+print(sk.quantiles_at([.1, .5, .9]))
+print(sk.normalized_rank(5))
+print(sk.min_value, sk.max_value)
 ```
 
-### Merge & Serialize
+### Merge
 
 ```python
-a, b = KLL(200), KLL(200)
+a = KLL(200, rng_seed=1)
+b = KLL(200, rng_seed=2)
 a.extend(range(10_000))
 b.extend(range(10_000, 20_000))
+a.merge(b)
 
-a.merge(b)            # in-place merge
-blob = a.to_bytes()   # serialize
-a2 = KLL.from_bytes(blob)
-assert abs(a2.quantile(0.5) - a.quantile(0.5)) < 1e-12
+a.validate()
+print(a.n, a.num_retained, a.min_k)
 ```
 
----
+### Serialize
 
-## 🧰 API (minimal)
-
-| Method                        | Description                             |
-| ----------------------------- | --------------------------------------- |
-| `add(x, weight=1)`            | Ingest one value with optional weight.  |
-| `extend(xs)`                  | Ingest an iterable of values.           |
-| `size()`                      | Total number of ingested items `n`.     |
-| `quantile(q)`                 | Approximate `q`-quantile for `q∈[0,1]`. |
-| `quantiles(m)`                | Evenly spaced cut points.               |
-| `quantiles_at(qs)`            | Batched quantiles for arbitrary `qs`.   |
-| `median()`                    | Convenience for `quantile(0.5)`.        |
-| `rank(x)`                     | Approximate rank of `x` in `[0, n]`.    |
-| `cdf(xs)`                     | CDF values for a sequence `xs`.         |
-| `merge(other)`                | In-place merge with another sketch.     |
-| `to_bytes()` / `from_bytes()` | Serialize / deserialize.                |
-
----
-
-## 📐 Theory (KLL in one minute)
-
-This implementation follows **Karnin–Lang–Liberty (2016)**: a space-optimal streaming algorithm for quantile approximation. Items are stored in **levels**; compaction randomly keeps one item from each pair and **promotes** it upward, doubling its weight. This achieves tight error bounds with **O(k)** space and **amortized O(1)** update cost.
-
-> Reference: *Optimal Quantile Approximation in Streams*, FOCS 2016.
-
----
-
-## 📊 Accuracy & Performance
-
-* Typical error ≈ **O(1/k)** in rank space (increase `capacity` to tighten ε).
-* Updates amortized **O(1)** with occasional compactions.
-* Queries merge level buffers (**k-way**) and scan weights to the target rank.
-  Use `quantiles_at` to answer multiple quantiles with a single scan.
-
-> Tip: For heavy query loads, cache materialized arrays between queries.
-
----
-
-## ✅ Tests
-
-Install the test dependencies and run the suite:
-
-```bash
-python -m pip install -r kll_sketch/requirements-test.txt
-python -m pytest -q
+```python
+blob = a.to_bytes()            # writes KLL2 + CRC32
+restored = KLL.from_bytes(blob)
+assert restored.to_bytes() == blob
 ```
 
----
+`from_bytes()` also accepts historical `KLL1` snapshots produced by the 1.x series.
 
-## 🌐 Offline installation
+## Public API
 
-The source distribution relies on `setuptools` and `wheel` as build-backend
-dependencies. When you install in an isolated or air-gapped environment you
-must provide those wheels yourself; otherwise the build frontend cannot
-bootstrap the backend.
+| API | Meaning |
+| --- | --- |
+| `add(x, weight=1)` | Insert one value or a positive integer-weighted value |
+| `extend(xs)` / `update_many(xs)` | Bulk ingestion |
+| `quantile(q)` | Approximate quantile for `q in [0,1]` |
+| `quantiles_at(qs)` | Batched quantiles using one cached query view |
+| `quantiles(m)` | Interior cuts for `m` equal-mass buckets |
+| `median()` | `quantile(0.5)` |
+| `rank(x, inclusive=True)` | Approximate absolute rank in `[0,n]` |
+| `ranks(xs, inclusive=True)` | Batched rank queries |
+| `normalized_rank(x)` | Approximate rank divided by `n` |
+| `cdf(xs)` / `pmf(cuts)` | Distribution queries |
+| `merge(other)` | Merge another sketch into this one |
+| `normalized_rank_error()` | Conventional empirical ~99% rank-error model |
+| `quantile_lower_bound(q)` / `quantile_upper_bound(q)` | Error-model-derived quantile bounds |
+| `to_bytes()` / `from_bytes()` | Strict versioned serialization |
+| `validate()` | Structural invariant checker |
+| `debug_state()` | JSON-friendly internal diagnostics |
 
-1. On a machine with internet access, download the wheels you need:
+`KLLSketch` remains available as an alias of `KLL` for compatibility.
 
-   ```bash
-   python -m pip download --only-binary=:all: --dest ./wheelhouse \
-       setuptools>=68 wheel
-   python -m pip download --only-binary=:all: --dest ./wheelhouse \
-       kll-sketch
-   ```
+## Accuracy model
 
-2. Transfer the `wheelhouse/` directory to the offline environment.
+KLL controls **rank error**. It does not promise a bounded numerical distance between the returned value and an exact quantile value.
 
-3. Install using only the local wheels:
+This implementation exposes the conventional empirical model used by established KLL implementations:
 
-   ```bash
-   python -m pip install --no-index --find-links ./wheelhouse \
-       setuptools wheel kll-sketch
-   ```
-
-If you build from a git checkout instead of a released wheel, vendor the
-backend wheels somewhere under version control (for example
-`tools/vendor/`) and point `PIP_FIND_LINKS` or your installer’s equivalent at
-that directory before running `pip install .`.
-
----
-
-## 📈 Benchmarks
-
-Get the optional tooling with extras:
-
-```bash
-python -m pip install -e .[bench,test]
+```text
+single-sided:  2.296 / k^0.9723
+PMF:           2.446 / k^0.9433
 ```
 
-Run the full synthetic sweep (matching the defaults in the docs):
+Representative single-sided values:
+
+| k | Approx. normalized rank error |
+|---:|---:|
+| 100 | 2.61% |
+| 200 | 1.33% |
+| 400 | 0.68% |
+| 800 | 0.35% |
+
+These are characterization values, not per-instance proofs. The benchmark harness measures realized normalized rank error directly against exact ranks.
+
+See [`docs/algorithm.md`](docs/algorithm.md) and [`docs/benchmarks.md`](docs/benchmarks.md).
+
+## Weighted updates
+
+Integer-weighted KLL updates are supported. A weight is decomposed into binary level contributions, the same structural idea used by modern weighted KLL implementations. Total represented mass remains exact.
+
+For applications whose statistical assumptions require an ordinary unweighted stream, ingest observations individually. Weighted inputs preserve weight semantics but can produce a different compaction history than literally replaying an interleaved expanded stream.
+
+## Performance architecture
+
+The pure-Python implementation avoids several common hot-path costs:
+
+- no `random.Random` object allocation per compaction;
+- deterministic SplitMix64 RNG state lives inside the sketch;
+- retained-item count is maintained incrementally;
+- level capacities use deterministic integer arithmetic;
+- repeated quantile/rank/CDF calls share a mutation-invalidated sorted cache;
+- batched rank/CDF queries materialize the sketch only once.
+
+There are **no runtime dependencies**.
+
+## Benchmarking
+
+Run a reproducible characterization sweep:
 
 ```bash
 python benchmarks/bench_kll.py \
-  --module kll_sketch --class KLLSketch \
   --outdir bench_out \
-  --Ns 1e5 1e6 \
-  --capacities 200 400 800 \
-  --distributions uniform normal exponential pareto bimodal \
-  --qs 0.01 0.05 0.1 0.25 0.5 0.75 0.9 0.95 0.99 \
-  --shards 8
+  --Ns 1e5 \
+  --capacities 100 200 400 800 \
+  --distributions uniform normal exponential pareto bimodal duplicates \
+  --trials 5
+
+python benchmarks/validate_benchmarks.py bench_out
 ```
 
-Artifacts land in `bench_out/` with the following schema:
+Artifacts include:
 
-- `accuracy.csv` — distribution, `N`, capacity, mode (`single`/`merged`), quantile, estimate, exact, and absolute value error.
-- `update_throughput.csv` — distribution, `N`, capacity, update wall time (seconds), and computed inserts/sec.
-- `query_latency.csv` — distribution, `N`, capacity, quantile, and per-query latency in microseconds.
-- `merge.csv` — distribution, `N`, capacity, shard count, and merge wall time (seconds).
+- `accuracy_rank.csv` — realized normalized rank errors;
+- `update_throughput.csv` — updates/sec;
+- `query_latency.csv` — steady-state cached query latency;
+- `merge.csv` — merge timing and retained counts;
+- `footprint.csv` — retained items, level count, serialized size.
 
-Visualise the outputs via `benchmarks/bench_plots.ipynb`, and read [`docs/benchmarks.md`](docs/benchmarks.md) for a narrated walkthrough.
+Optional Apache DataSketches comparison:
 
----
-
-## 🛡️ Operations
-
-For day-2 guidance—monitoring, alerting, capacity planning, and a step-by-step upgrade playbook—see the [Operational Guide](docs/operations.md).
-
----
-
-## 🗺️ Roadmap
-
-* Optional NumPy/C hot paths for sort/merge.
-
----
-
-## 📝 License
-
-Licensed under **Apache-2.0**.
-
----
-
-## 🙌 Acknowledgments
-
-Based on the KLL algorithm by Z. Karnin, E. Liberty, and L. Lang.
-
+```bash
+python -m pip install '.[compare]'
+python benchmarks/compare_datasketches.py --N 1000000 --k 200
 ```
 
+The comparison is intentionally external and optional; `datasketches` is not a runtime dependency.
 
+## Validation
+
+```bash
+python -m pip install -r kll_sketch/requirements-test.txt
+python -m pytest -q kll_sketch/tests --cov=kll_sketch --cov-report=term-missing
+```
+
+The deterministic suite covers:
+
+- exact mode;
+- weight conservation;
+- exact extrema;
+- merge trees and mixed `k`;
+- rank/CDF/PMF semantics;
+- cache invalidation;
+- adversarial sorted/reverse/duplicate/extreme streams;
+- KLL2 corruption and checksum rejection;
+- KLL1 backward reading;
+- byte-stable KLL2 round trips;
+- property-based invariant and rank-error tests when Hypothesis is installed.
+
+## Packaging and offline builds
+
+The source tree keeps a small in-tree PEP 517 backend with **no build-time third-party dependencies**. This allows source installation without contacting a package index:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+PIP_NO_INDEX=1 python -m pip install --no-index .
+```
+
+Runtime remains pure Python and dependency-free. Distribution metadata is emitted as Core Metadata 2.4 so SPDX `License-Expression` and `License-File` fields are standards-correct.
+
+## Compatibility notes for 2.0
+
+- Python 3.10+ is supported.
+- `to_bytes()` now emits `KLL2`; `KLL1` remains readable.
+- configured `k` no longer gets overwritten merely because another sketch with smaller `k` is merged; `min_k` tracks inherited estimation quality separately.
+- exact `q=0` and `q=1` answers come from separately tracked extrema.
+- benchmark accuracy is now rank-based rather than absolute value error.
+
+See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+
+## References
+
+- Zohar Karnin, Kevin Lang, Edo Liberty, **Optimal Quantile Approximation in Streams**, FOCS 2016.
+- Apache DataSketches KLL implementations and characterization methodology.
+
+## License
+
+Apache License 2.0.

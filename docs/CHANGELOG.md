@@ -1,21 +1,47 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## 2.0.0
 
-The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Algorithm
 
-## [1.0.0] - 2025-10-08
-### Added
-- Initial public release of the deterministic Python implementation of the KLL streaming quantile sketch.
-- Serialization helpers (`to_bytes` / `from_bytes`) with versioned binary framing (`KLL1`).
-- Benchmarks and documentation describing accuracy and performance envelopes.
+- Replaced the 1.x KLL-inspired compactor with a KLL-style geometric hierarchy.
+- Added one-parity-per-compaction randomized halving.
+- Added exact external min/max tracking.
+- Added deterministic integer level-capacity calculation.
+- Added persistent SplitMix64 RNG state for reproducible seeded operation.
+- Added explicit `min_k` merge-quality tracking while preserving destination configured `k`.
+- Retained integer-weighted updates using binary level placement.
 
-## Release Signing
-All published distributions on PyPI are signed with the maintainer's OpenPGP key (`0xA3D0A2F6E24F3B7C`). Verify signatures with:
+### Queries
 
-```bash
-pip download kll-sketch==1.0.0
-python -m gpg --verify kll_sketch-1.0.0.tar.gz.asc kll_sketch-1.0.0.tar.gz
-```
+- Added mutation-invalidated cached sorted query views.
+- Added batched `ranks`, `normalized_rank`, `pmf`, error-model reporting and quantile bounds.
+- Made `q=0` and `q=1` return exact extrema.
 
-Public key fingerprints and additional verification steps are listed in the release notes on GitHub.
+### Serialization
+
+- Added strict checksummed `KLL2` format.
+- Added payload length, CRC32, RNG state, extrema, `min_k`, compaction count and retained count.
+- Added hostile-input validation and `SerializationError`.
+- Preserved strict read compatibility with historical `KLL1` payloads.
+
+### Validation
+
+- Reworked accuracy testing and benchmarks around normalized rank error.
+- Added adversarial, merge-tree, corruption, byte-stability and property tests.
+- Added explicit structural `validate()` and `debug_state()` APIs.
+- Raised deterministic suite branch coverage target to 90%.
+
+### Packaging / CI
+
+- Fixed Core Metadata versioning for `License-Expression` / `License-File`.
+- Excluded tests and build-backend internals from runtime wheels.
+- Repaired offline source installation validation.
+- Replaced stale value-error performance gates with rank-space characterization.
+- Raised supported Python baseline to 3.10 and added 3.13/3.14 coverage.
+
+### Compatibility changes
+
+- `to_bytes()` now emits KLL2. `from_bytes()` still reads KLL1.
+- `KLLSketch` is now a direct alias of `KLL` instead of an empty subclass.
+- Merge no longer overwrites configured `k`; inherited lower-quality estimation is represented by `min_k`.

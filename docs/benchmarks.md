@@ -1,90 +1,52 @@
-# KLL Sketch Benchmarking Guide
+# Benchmark and characterization methodology
 
-This guide explains how to generate baseline performance numbers for the local `kll_sketch` implementation, analyse the results, and interpret the reported error metrics.
+## Primary metric: normalized rank error
 
-## Installation
+KLL is a rank sketch. The primary accuracy measurement is therefore realized normalized rank error, not absolute numerical distance from an exact quantile value.
 
-The benchmarks rely on a handful of scientific Python packages. Create and activate a virtual environment, then install the dependencies:
+For returned estimate `x_hat` at requested quantile `q`, the harness finds the interval of true ranks occupied by `x_hat` (important for duplicates) and reports the distance from target rank `q*(N-1)` to that interval divided by `N`.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[bench]
-```
+This makes the metric meaningful across uniform, heavy-tailed, discrete and arbitrarily scaled distributions.
 
-> Windows PowerShell activation: `.venv\Scripts\Activate.ps1`
+## Distributions
 
-If you prefer an ad-hoc install without extras, install the runtime packages manually: `pip install -U numpy pandas matplotlib pytest pytest-benchmark jupyter`.
+The default sweep includes:
 
-## Running the CLI benchmarks
+- uniform;
+- Gaussian;
+- exponential;
+- Pareto;
+- bimodal mixture;
+- duplicate-heavy discrete streams.
 
-The entry point lives at `benchmarks/bench_kll.py`. It generates synthetic datasets, measures update throughput, query latency, accuracy against `numpy.quantile`, and merge performance. By default it sweeps the recommended population sizes, sketch capacities, quantiles, and distributions. All artifacts are written beneath `bench_out/`.
+The deterministic test suite separately covers monotone, reverse-monotone, all-equal and alternating-extreme inputs.
 
-Example command (matches the defaults):
+## Outputs
 
-```bash
-python benchmarks/bench_kll.py \
-  --module kll_sketch --class KLLSketch \
-  --outdir bench_out \
-  --Ns 1e5 1e6 \
-  --capacities 200 400 800 \
-  --distributions uniform normal exponential pareto bimodal \
-  --qs 0.01 0.05 0.1 0.25 0.5 0.75 0.9 0.95 0.99 \
-  --shards 8
-```
+`bench_kll.py` writes:
 
-The script produces four CSV files:
+- `accuracy_rank.csv`
+- `update_throughput.csv`
+- `query_latency.csv`
+- `merge.csv`
+- `footprint.csv`
 
-- `bench_out/accuracy.csv`: absolute value error for each `(distribution, N, capacity, q)` pair. A `mode` column distinguishes single-pass sketches from merged sketches.
-- `bench_out/update_throughput.csv`: update times and inserts/sec for each `(distribution, N, capacity)` combination.
-- `bench_out/query_latency.csv`: per-quantile latency measurements in microseconds.
-- `bench_out/merge.csv`: merge timings versus shard counts.
+Each accuracy row includes the sketch's empirical error-model value so observed error/model ratios can be gated in CI.
 
-## Pytest micro-benchmarks
+## CI smoke gate
 
-The micro-benchmarks live under `tests/bench/` and are marked with `@pytest.mark.benchmark` so they are skipped unless explicitly requested. They use `pytest-benchmark` to record update throughput for `N ∈ {1e5, 1e6}` and `capacity ∈ {200, 400, 800}` on uniform and normal data. A lightweight accuracy assertion verifies that the median absolute error stays within `~1%` of the data standard deviation to avoid flaky failures.
+The CI benchmark is deliberately small enough for shared runners. It checks:
 
-Run them with:
+- realized normalized rank error against a conservative multiple of the empirical model;
+- a broad pure-Python update-throughput floor;
+- cached query p95 latency;
+- merge completion;
+- non-empty retained-footprint sanity.
 
-```bash
-pytest -m benchmark -q --benchmark-json=bench_out/pytest/results.json
-```
+Shared-runner timing is not presented as portable benchmark evidence. Release performance claims should use dedicated machines and preserve machine metadata alongside raw CSV artifacts.
 
-The `bench_out/pytest/` directory is created automatically so the JSON export succeeds.
+## External comparison
 
-## Plotting the results
+`compare_datasketches.py` optionally compares this implementation with Apache DataSketches KLL. It reports throughput, retained population and realized rank error on the same data.
 
-Open the Jupyter notebook at `benchmarks/bench_plots.ipynb` to load the CSV outputs, generate the summary plots, and inspect basic accuracy tables:
-
-```bash
-jupyter notebook benchmarks/bench_plots.ipynb
-```
-
-The notebook provides:
-
-- Absolute value error versus quantile, faceted by distribution with one line per capacity.
-- Updates/sec versus `N` on a log-scaled horizontal axis, grouped by capacity.
-- Query latency (µs) versus capacity, grouped by quantile.
-- Merge time versus the number of shards.
-- Summary tables for mean/median error and best/worst quantiles.
-
-## Interpreting the metrics
-
-- **Value error vs rank error**: The benchmark tracks *value* error—`|approximate_quantile - exact_quantile|`. This directly measures how far the returned value is from the true quantile. Rank error (difference between approximate and exact ranks) is another perspective, but is not reported here. Large value errors often occur in heavy-tailed regions even when rank error is acceptable.
-- **Capacity (`k`)**: The sketch capacity controls the maximum buffer size (and therefore the accuracy/memory trade-off). Higher capacities retain more samples, reducing approximation error at the cost of higher memory usage and slightly slower updates. You should observe smaller value errors as `k` increases, especially for central quantiles.
-- **Throughput and latency**: Updates/sec should scale roughly linearly with the input size until memory/cache effects kick in. Query latency (µs per quantile) should remain in the single digits to low tens for the provided capacities.
-- **Merge performance**: Shard merges should be significantly faster than building a sketch from scratch. Post-merge accuracy should match single-pass sketches within noise.
-
-## Repository layout
-
-```
-kll_sketch/
-├── benchmarks/
-│   ├── bench_kll.py        # CLI benchmark runner
-│   └── bench_plots.ipynb   # Notebook for plotting CSV outputs
-├── tests/
-│   └── bench/              # Pytest micro-benchmarks (marked)
-├── bench_out/              # Outputs (ignored by git)
-└── docs/
-    └── benchmarks.md       # This guide
-```
+For serious comparisons, use both equal-`k` and equal-serialized-size runs. Equal `k` alone is not a complete memory-efficiency comparison because implementations may store different metadata and item representations.

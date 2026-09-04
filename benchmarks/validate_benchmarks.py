@@ -1,130 +1,67 @@
 #!/usr/bin/env python3
-"""Validate benchmark outputs against regression thresholds.
-
-This script is intended to run in CI after ``benchmarks/bench_kll.py``. It reads
-CSV outputs from ``bench_out`` (or a supplied directory) and enforces
-conservative performance and accuracy targets so regressions surface early.
-"""
-
+"""Validate KLL benchmark artifacts with rank-space and regression gates."""
 from __future__ import annotations
 
 import argparse
-import json
+import csv
 from pathlib import Path
-from typing import Dict, List, Tuple
-
-import pandas as pd
+import statistics
 
 
-ACCURACY_ABS_ERROR_MAX = 0.5
-# The synthetic workload used in CI runs on limited shared runners where the
-# update throughput hovers around ~6k updates/sec with occasional dips. 15k was
-# unrealistically high for the available hardware, so we target a conservative
-# floor that still catches major regressions while keeping signal-to-noise
-# reasonable.
-THROUGHPUT_MIN_UPS = 5_800
-LATENCY_P95_MAX_US = 1_000.0
-MERGE_TIME_MAX_S = 2.0
-
-
-def _load_csv(path: Path) -> pd.DataFrame:
+def _rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
-        raise FileNotFoundError(f"Expected benchmark artifact missing: {path}")
-    return pd.read_csv(path)
-
-
-def _check_accuracy(df: pd.DataFrame) -> Tuple[bool, Dict[str, float]]:
-    worst = df.groupby(["mode"])["abs_error"].max().to_dict()
-    overall = float(df["abs_error"].max()) if not df.empty else 0.0
-    ok = overall <= ACCURACY_ABS_ERROR_MAX
-    worst.setdefault("overall", overall)
-    return ok, worst
-
-
-def _check_throughput(df: pd.DataFrame) -> Tuple[bool, float]:
-    minimum = float(df["updates_per_sec"].min()) if not df.empty else float("inf")
-    return minimum >= THROUGHPUT_MIN_UPS, minimum
-
-
-def _check_latency(df: pd.DataFrame) -> Tuple[bool, float]:
-    if df.empty:
-        return True, 0.0
-    p95 = float(df["latency_us"].quantile(0.95))
-    return p95 <= LATENCY_P95_MAX_US, p95
-
-
-def _check_merge(df: pd.DataFrame) -> Tuple[bool, float]:
-    if df.empty:
-        return True, 0.0
-    maximum = float(df["merge_time_s"].max())
-    return maximum <= MERGE_TIME_MAX_S, maximum
-
-
-def _summarise(results: Dict[str, Dict[str, object]]) -> str:
-    lines: List[str] = ["# Benchmark validation summary", ""]
-    lines.append("| Check | Threshold | Observed | Status |")
-    lines.append("| --- | --- | --- | --- |")
-    for name, payload in results.items():
-        threshold = payload["threshold"]
-        observed = payload["observed"]
-        status = "PASS" if payload["ok"] else "FAIL"
-        lines.append(f"| {name} | {threshold} | {observed} | {status} |")
-    lines.append("")
-    lines.append("```json")
-    lines.append(json.dumps(results, indent=2, sort_keys=True))
-    lines.append("```")
-    return "\n".join(lines)
+        raise SystemExit(f"missing benchmark artifact: {path}")
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("outdir", nargs="?", default="bench_out", help="Directory containing benchmark CSVs")
-    parser.add_argument("--summary", default="bench_summary.md", help="Filename for the generated markdown summary")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("outdir", nargs="?", default="bench_out")
+    p.add_argument("--summary", default="bench_summary.md")
+    p.add_argument("--throughput-floor", type=float, default=50_000.0)
+    p.add_argument("--query-p95-us", type=float, default=100.0)
+    p.add_argument("--model-multiplier", type=float, default=2.0)
+    args = p.parse_args()
+    root = Path(args.outdir)
 
-    outdir = Path(args.outdir)
-    accuracy = _load_csv(outdir / "accuracy.csv")
-    throughput = _load_csv(outdir / "update_throughput.csv")
-    latency = _load_csv(outdir / "query_latency.csv")
-    merge = _load_csv(outdir / "merge.csv")
+    accuracy = _rows(root / "accuracy_rank.csv")
+    throughput = _rows(root / "update_throughput.csv")
+    latency = _rows(root / "query_latency.csv")
+    merge = _rows(root / "merge.csv")
+    footprint = _rows(root / "footprint.csv")
 
-    summary: Dict[str, Dict[str, object]] = {}
+    worst_ratio = 0.0
+    worst_error = 0.0
+    for row in accuracy:
+        err = float(row["normalized_rank_error"])
+        model = float(row["model_99_error"])
+        worst_error = max(worst_error, err)
+        worst_ratio = max(worst_ratio, err / model if model else 0.0)
 
-    accuracy_ok, accuracy_obs = _check_accuracy(accuracy)
-    summary["Accuracy abs error"] = {
-        "threshold": f"<= {ACCURACY_ABS_ERROR_MAX}",
-        "observed": {mode: round(value, 6) for mode, value in accuracy_obs.items()},
-        "ok": accuracy_ok,
-    }
+    min_ups = min((float(r["updates_per_sec"]) for r in throughput), default=float("inf"))
+    latencies = sorted(float(r["latency_us"]) for r in latency)
+    p95 = latencies[min(len(latencies)-1, int(.95 * len(latencies)))] if latencies else 0.0
+    max_merge = max((float(r["merge_time_s"]) for r in merge), default=0.0)
+    over_capacity = [r for r in footprint if int(r["num_retained"]) <= 0 and int(r["N"]) > 0]
 
-    throughput_ok, throughput_obs = _check_throughput(throughput)
-    summary["Update throughput"] = {
-        "threshold": f">= {THROUGHPUT_MIN_UPS} updates/sec",
-        "observed": round(throughput_obs, 2),
-        "ok": throughput_ok,
-    }
+    checks = [
+        ("Rank error / empirical model", worst_ratio <= args.model_multiplier, f"{worst_ratio:.3f}x", f"<= {args.model_multiplier:.2f}x"),
+        ("Update throughput", min_ups >= args.throughput_floor, f"{min_ups:,.0f}/s", f">= {args.throughput_floor:,.0f}/s"),
+        ("Cached query p95", p95 <= args.query_p95_us, f"{p95:.2f} us", f"<= {args.query_p95_us:.2f} us"),
+        ("Merge smoke", max_merge <= 2.0, f"{max_merge:.3f} s", "<= 2.0 s"),
+        ("Footprint sanity", not over_capacity, "OK" if not over_capacity else "invalid", "retained > 0"),
+    ]
 
-    latency_ok, latency_obs = _check_latency(latency)
-    summary["Query latency p95"] = {
-        "threshold": f"<= {LATENCY_P95_MAX_US} µs",
-        "observed": round(latency_obs, 2),
-        "ok": latency_ok,
-    }
-
-    merge_ok, merge_obs = _check_merge(merge)
-    summary["Merge time"] = {
-        "threshold": f"<= {MERGE_TIME_MAX_S} s",
-        "observed": round(merge_obs, 3),
-        "ok": merge_ok,
-    }
-
-    summary_path = outdir / args.summary
-    summary_path.write_text(_summarise(summary), encoding="utf-8")
-
-    print(summary_path.read_text(encoding="utf-8"))
-
-    if not all(item["ok"] for item in summary.values()):
-        raise SystemExit("Benchmark regression detected; see summary above.")
+    lines = ["# Benchmark validation summary", "", f"Worst normalized rank error: **{worst_error:.6f}**", "", "| Gate | Observed | Threshold | Status |", "|---|---:|---:|:---:|"]
+    for name, ok, observed, threshold in checks:
+        lines.append(f"| {name} | {observed} | {threshold} | {'PASS' if ok else 'FAIL'} |")
+    summary = "\n".join(lines) + "\n"
+    path = root / args.summary
+    path.write_text(summary, encoding="utf-8")
+    print(summary)
+    if not all(ok for _, ok, _, _ in checks):
+        raise SystemExit("benchmark regression detected")
 
 
 if __name__ == "__main__":

@@ -1,90 +1,146 @@
 name: CI
+
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
   pull_request:
-    branches: [ "**" ]
+    branches: ["**"]
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: test-${{ matrix.os }}-py${{ matrix.python-version }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix["python-version"] }}
-      - name: Install dependencies
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r kll_sketch/requirements-test.txt
+      - name: Compile runtime
+        run: python -m compileall -q kll_sketch
       - name: Run tests with coverage
-        run: python -m pytest --cov=kll_sketch --cov-report=term-missing --cov-report=xml kll_sketch/tests
-      - name: Upload coverage reports to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix['python-version'] == '3.11'
-        uses: codecov/codecov-action@v5
+        run: >-
+          python -m pytest -q kll_sketch/tests
+          --cov=kll_sketch
+          --cov-report=term-missing
+          --cov-report=xml
+      - name: Upload coverage XML
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-  bench:
+          name: coverage-xml
+          path: coverage.xml
+
+  package:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Install bench extras
+          python-version: "3.13"
+      - name: Build wheel and sdist with in-tree backend
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e './kll_sketch[bench]'
-      - name: Run smoke benchmark
-        working-directory: ${{ github.workspace }}
+          mkdir -p dist
+          python - <<'PY'
+          from kll_sketch._build_backend import build_sdist, build_wheel
+          print(build_wheel("dist"))
+          print(build_sdist("dist"))
+          PY
+      - name: Inspect wheel contents and metadata
         run: |
-          python benchmarks/bench_kll.py \
-            --outdir bench_out \
-            --Ns 1e5 \
-            --capacities 200 \
-            --distributions normal \
-            --qs 0.25 0.5 0.75 \
-            --shards 4
-      - name: Validate benchmark thresholds
-        run: python benchmarks/validate_benchmarks.py bench_out --summary bench_summary.md
-      - name: Upload benchmark summary
-        uses: actions/upload-artifact@v4
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheel = next(Path("dist").glob("*.whl"))
+          with ZipFile(wheel) as zf:
+              names = zf.namelist()
+              assert "kll_sketch/kll_sketch.py" in names
+              assert "kll_sketch/__init__.py" in names
+              assert not any("/tests/" in name for name in names)
+              assert "kll_sketch/_build_backend.py" not in names
+              metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
+              assert "Metadata-Version: 2.4" in metadata
+              assert "License-Expression: Apache-2.0" in metadata
+          print(wheel)
+          PY
+      - name: Install built wheel and smoke test outside source tree
+        run: |
+          python -m venv /tmp/kll-wheel-test
+          /tmp/kll-wheel-test/bin/pip install --no-index dist/*.whl
+          cd /tmp
+          /tmp/kll-wheel-test/bin/python - <<'PY'
+          from kll_sketch import KLL, KLLSketch, __version__
+          assert KLLSketch is KLL
+          sk = KLL(200, 7331)
+          sk.extend(range(100000))
+          sk.validate()
+          restored = KLL.from_bytes(sk.to_bytes())
+          restored.validate()
+          assert restored.to_bytes() == sk.to_bytes()
+          print(__version__, sk.num_retained)
+          PY
+      - uses: actions/upload-artifact@v4
         with:
-          name: bench-validation-summary
-          path: bench_out/bench_summary.md
-      - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-out
-          path: bench_out
+          name: distributions
+          path: dist/
+
   offline-install:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Create isolated virtual environment
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Source install without package index
         run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip list
-      - name: Install from source with no index
-        env:
-          PIP_NO_INDEX: "1"
+          python -m venv .venv-offline
+          PIP_NO_INDEX=1 .venv-offline/bin/pip install --no-index .
+      - name: Offline smoke test
         run: |
-          . .venv/bin/activate
-          python -m pip install --no-index .
-      - name: Smoke test the offline install
-        run: |
-          . .venv/bin/activate
-          python - <<'PY'
-from kll_sketch import KLL
+          cd /tmp
+          $GITHUB_WORKSPACE/.venv-offline/bin/python - <<'PY'
+          from kll_sketch import KLL
+          sketch = KLL(128, 42)
+          sketch.extend(range(10000))
+          sketch.validate()
+          assert sketch.min_value == 0.0
+          assert sketch.max_value == 9999.0
+          print("offline source install passed")
+          PY
 
-sketch = KLL(capacity=128)
-sketch.extend(range(10_000))
-assert abs(sketch.quantile(0.5) - 4_999.5) < 10
-print("offline smoke test passed")
-PY
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Rank-space characterization smoke
+        run: |
+          python benchmarks/bench_kll.py \
+            --outdir bench_out \
+            --Ns 1e5 \
+            --capacities 100 200 \
+            --distributions normal duplicates \
+            --qs .01 .1 .5 .9 .99 \
+            --trials 2 \
+            --shards 4
+          python benchmarks/validate_benchmarks.py bench_out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke
+          path: bench_out/
