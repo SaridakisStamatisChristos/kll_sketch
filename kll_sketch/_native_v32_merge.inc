@@ -1,19 +1,14 @@
 // v3.2: merge-engine specializations.
 //
-// 1. A fresh empty same-k destination can adopt an already-valid resident
-//    source hierarchy without running the generic planner/append path.
-// 2. For resident-to-resident merges, structural preflight tells us exactly
-//    which higher levels will be compacted. Raw values appended to those levels
-//    are dead: canonical compaction immediately replaces the whole raw level by
-//    at most one leftover. Keep the sorted shadow authoritative transiently,
-//    skip those dead raw writes, and restore raw/sorted parity at compaction.
-// 3. min_k is cached lazily in resident state. Same-k hot merges stay entirely
-//    native after the first source lookup; a potentially tighter source verifies
-//    the Python destination bound before changing it, so keyword/fallback merges
-//    cannot leave stale native metadata.
+// Fresh empty same-k destinations adopt a resident source hierarchy directly.
+// Resident-to-resident merges use a structural preflight, elide raw writes for
+// higher levels that are guaranteed to compact, and cache min_k metadata.
 //
-// These paths preserve the destination RNG stream, source logical immutability,
-// Python visibility, KLL2 byte semantics, and established v3.1 fallbacks.
+// The planned executor below also records the exact compaction-level sequence
+// discovered by preflight. Compaction sizes/capacity decisions do not depend on
+// RNG parity, so replaying that sequence through the existing exact compactor
+// preserves the destination RNG stream and byte-level Python parity while
+// avoiding a second hierarchy scan and repeated capacity-geometry discovery.
 
 bool read_empty_adoption_config_v32(
     PyObject* self,
@@ -58,11 +53,6 @@ bool inherit_empty_min_k_v32(PyObject* self, PyObject* other, SketchState& src) 
     return set_u64_attr(self, "_min_k", src.min_k_cache);
 }
 
-// The destination cache can become stale only if a deliberately non-fast path
-// (for example a keyword merge) tightened Python `_min_k`. We therefore avoid
-// reading Python on the common same-k path. Only when a source appears capable
-// of tightening the cached bound do we re-read the authoritative Python value
-// before deciding whether a write is necessary.
 bool inherit_resident_min_k_v32(
     PyObject* self,
     PyObject* other,
@@ -165,12 +155,17 @@ PyObject* adopt_empty_resident_merge_v32(
 // Compaction-aware resident merge
 // -------------------------------------------------------------------------
 
+constexpr std::size_t V32_DIRECT_COMPACTION_LIMIT = 256U;
+
 struct MergePlanV32 {
     std::size_t initial_levels = 0;
     std::size_t final_levels = 0;
     std::uint64_t final_retained = 0;
     std::uint64_t final_compactions = 0;
     std::uint64_t compact_mask = 0;
+    std::array<unsigned char, V32_DIRECT_COMPACTION_LIMIT> compact_sequence{};
+    std::size_t compact_count = 0;
+    bool sequence_overflow = false;
 };
 
 bool preflight_resident_merge_v32(
@@ -254,7 +249,12 @@ bool preflight_resident_merge_v32(
         sizes[h] = leftover;
         sizes[h + 1U] += promoted;
         retained = retained - old_count + leftover + promoted;
-        if (h < 64U) plan.compact_mask |= (1ULL << h);
+        plan.compact_mask |= (1ULL << h);
+        if (plan.compact_count < V32_DIRECT_COMPACTION_LIMIT) {
+            plan.compact_sequence[plan.compact_count++] = static_cast<unsigned char>(h);
+        } else {
+            plan.sequence_overflow = true;
+        }
         if (compactions == U64_MAX) {
             PyErr_SetString(PyExc_OverflowError, "native compaction count overflow");
             return false;
@@ -420,7 +420,13 @@ bool merge_resident_states_v32(
 
     MergePlanV32 plan;
     if (!preflight_resident_merge_v32(dst, src, plan)) return false;
-    if (!ensure_levels(dst, plan.initial_levels)) return false;
+
+    // For ordinary merges, pre-grow once to the final hierarchy computed by
+    // preflight. The exact compaction sequence is replayed explicitly, so the
+    // earlier capacity change cannot alter which levels compact. Pathological
+    // plans too large for the fixed sequence buffer retain the proven scanner.
+    const std::size_t grow_to = plan.sequence_overflow ? plan.initial_levels : plan.final_levels;
+    if (!ensure_levels(dst, grow_to)) return false;
 
     std::uint64_t raw_elided_mask = plan.compact_mask & ~1ULL;
 
@@ -452,10 +458,23 @@ bool merge_resident_states_v32(
         }
     }
 
-    if (!compress_elided_v32(dst, raw_elided_mask)) return false;
+    if (plan.sequence_overflow) {
+        if (!compress_elided_v32(dst, raw_elided_mask)) return false;
+    } else {
+        for (std::size_t i = 0; i < plan.compact_count; ++i) {
+            const std::size_t h = static_cast<std::size_t>(plan.compact_sequence[i]);
+            if (!compact_level_elided_v32(dst, h, raw_elided_mask)) return false;
+        }
+        if (raw_elided_mask != 0ULL) {
+            PyErr_SetString(PyExc_RuntimeError, "planned v3.2 merge left an uncompacted elided raw level");
+            return false;
+        }
+    }
+
     if (dst.levels.size() != plan.final_levels ||
         dst.retained != plan.final_retained ||
-        dst.compactions != plan.final_compactions) {
+        dst.compactions != plan.final_compactions ||
+        dst.retained > dst.total_capacity) {
         PyErr_SetString(PyExc_RuntimeError, "v3.2 native merge diverged from structural preflight");
         return false;
     }
