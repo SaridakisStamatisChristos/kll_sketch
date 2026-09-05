@@ -119,42 +119,27 @@ The native state machine consumes the same SplitMix64 bits in the same places as
 
 ### SIMD policy
 
-On GCC/Clang x86 builds, compatible contiguous native-`double` buffers use a **runtime-dispatched AVX2 scan** that validates finiteness and reduces extrema four doubles at a time. Signed-zero batches take the tie-preserving path required for Python-equivalent serialized state. The extension is not globally compiled with `-mavx2`, so older x86 CPUs remain safe. Non-x86 and current MSVC builds use the scalar scanner while retaining the rest of the C++ engine.
+AVX2 is used only through runtime dispatch on supported x86 GCC/Clang builds. The extension is never compiled globally with `-mavx2`; unsupported CPUs and non-x86 targets use scalar code.
 
-```python
-from kll_sketch import native_backend_info
-print(native_backend_info())
-# {'available': True, 'enabled': True, 'compiler': 'gcc',
-#  'simd': 'avx2-runtime', 'api_version': 1, 'persistent_state': True}
-```
+## Build modes
 
-### Build native in a checkout
+### Pure Python (default)
 
 ```bash
-python -m kll_sketch._native_build
-python -c "from kll_sketch import native_backend_info; print(native_backend_info())"
+python -m pip install .
 ```
 
-A C++17 compiler and Python development headers for the active interpreter are required. On Windows use an MSVC developer environment.
+The default wheel is universal and remains `py3-none-any`.
 
-### Pure and native wheels
-
-The default wheel stays universal and pure Python:
+### Native extension
 
 ```bash
-python -m pip wheel .
-# kll_sketch-3.2.0-py3-none-any.whl
+python -m pip wheel . --no-deps --no-build-isolation --config-settings native=true
 ```
 
-Native compilation is explicit:
+The native build uses the active interpreter's compiler/sysconfig settings and emits a platform-local CPython wheel.
 
-```bash
-python -m pip wheel . --config-settings native=true
-```
-
-That produces a wheel tagged for the active CPython/platform and containing the extension. Native wheels built this way are platform-local artifacts; normal release portability still comes from the universal pure wheel.
-
-### Force pure Python
+Native acceleration can be disabled at runtime with:
 
 ```bash
 KLL_SKETCH_DISABLE_NATIVE=1 python your_program.py
@@ -167,94 +152,17 @@ from kll_sketch import set_native_enabled
 set_native_enabled(False)
 ```
 
-See [`docs/native.md`](docs/native.md).
-
-## Weighted updates
-
-Positive integer weights are represented through binary level placement. Total represented mass remains exact. Applications that require the ordinary unweighted KLL statistical model should ingest observations individually; a weighted stream can have a different compaction history from replaying an expanded interleaved stream.
-
-## Benchmarking
-
-Pure rank-space characterization:
+## Development
 
 ```bash
-python benchmarks/bench_kll.py \
-  --outdir bench_out \
-  --Ns 1e5 \
-  --capacities 100 200 400 800 \
-  --distributions uniform normal exponential pareto bimodal duplicates \
-  --trials 5
-python benchmarks/validate_benchmarks.py bench_out
-```
-
-Native differential/performance gate:
-
-```bash
-python -m kll_sketch._native_build
-python benchmarks/bench_native.py --N 300000 --k 200
-```
-
-Focused public-API comparison against Apache DataSketches KLL:
-
-```bash
-python -m pip install numpy datasketches
+python -m pip install -r requirements-test.txt
+pytest -q
+python benchmarks/bench_native.py --N 500000
 python benchmarks/competitive_kll_focus.py --N 250000 --k 200 --trials 5
 ```
 
-Broader multi-library comparison:
+See [`docs/native.md`](docs/native.md) and [`docs/release-checklist.md`](docs/release-checklist.md) for native and release details.
 
-```bash
-python benchmarks/competitive_quantiles.py --help
-```
+## License
 
-### v3.2 merge characterization
-
-On the v3.2 candidate gate (Ubuntu 24.04, CPython 3.13, `N=250000`, `k=200`, eight shards), the focused 200-destination public-API benchmark measured:
-
-| metric | kll-sketch native | Apache KLL 5.2 |
-|---|---:|---:|
-| geo-mean ingestion | 31.45M updates/s | 27.96M updates/s |
-| repeated query | 0.398 us | 0.653 us |
-| repeated eight-way merge | 50.19 us | 50.49 us |
-
-The broader two-trial cold-destination characterization measured 86.73 us for `kll-sketch-native` versus 66.45 us for Apache KLL. That cold benchmark is intentionally reported rather than hidden: v3.2 removes a meaningful first-merge bootstrap cost and reaches parity in the repeated merge gate, but Apache remains faster for the measured cold one-shot merge workload.
-
-These are observations of GitHub-hosted runners, not portable performance guarantees. The native benchmark aborts if native and Python serialized states differ.
-
-## Validation and CI
-
-```bash
-python -m pip install -r kll_sketch/requirements-test.txt
-python -m pytest -q kll_sketch/tests --cov=kll_sketch --cov-report=term-missing
-```
-
-CI validates:
-
-- pure Python on Linux/macOS/Windows × Python 3.10–3.14;
-- native C++ on Linux/macOS/Windows across representative supported Python versions;
-- native/Python byte-level state parity;
-- resident merge → continued native ingestion → serialization parity;
-- empty-destination native merge → later compaction with different source/destination seeds → exact byte parity;
-- native-disable synchronization after resident operations;
-- invalid-input fallback and one-shot iterator safety;
-- signed-zero stability;
-- enormous-rank (`n > 2**53`) query fallback;
-- universal pure wheel build/install;
-- platform native wheel build/install;
-- no-index pure source installation;
-- rank-space regression gates;
-- native speed regression gates.
-
-## Compatibility
-
-Version 3.2 preserves:
-
-- the `KLL` / `KLLSketch` public class identity;
-- pure-Python behavior when native acceleration is unavailable or disabled;
-- KLL2 serialization bytes for equivalent canonical state;
-- KLL1 read compatibility;
-- scalar and weighted update semantics;
-- merge `min_k` semantics;
-- seeded deterministic compaction semantics.
-
-See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for release details.
+Apache-2.0
