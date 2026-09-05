@@ -10,6 +10,7 @@ import numpy as np
 from datasketches import kll_doubles_sketch
 
 from kll_sketch import KLL, native_backend_info
+from kll_sketch import _native as _native_impl
 
 
 def pct(values: list[float], p: float) -> float:
@@ -61,6 +62,28 @@ def one_apache(sources, k: int):
         positions.append((time.perf_counter_ns() - t0) / 1e3)
     total = (time.perf_counter_ns() - t_all) / 1e3
     return total, positions, dst.n
+
+
+def structure_ours(sources, k: int, seed: int):
+    """Untimed pass exposing which source positions actually compact/grow."""
+    dst = KLL(k, seed)
+    rows = []
+    previous_compactions = 0
+    for i, src in enumerate(sources, 1):
+        dst.merge(src)
+        capsule = dst._cache_prefix
+        n, retained, rng_state, compactions, min_value, max_value, num_levels = _native_impl.state_stats(capsule)
+        compactions = int(compactions)
+        rows.append({
+            "position": i,
+            "n": int(n),
+            "retained": int(retained),
+            "num_levels": int(num_levels),
+            "compactions_total": compactions,
+            "compactions_delta": compactions - previous_compactions,
+        })
+        previous_compactions = compactions
+    return rows
 
 
 def summarize(xs: list[float]):
@@ -124,6 +147,7 @@ def main() -> None:
             }
             for i in range(args.shards)
         ],
+        "structure": structure_ours(ours_sources, args.k, args.seed + 90_000),
         "raw": {"ours_total_us": ours_total, "apache_total_us": apache_total},
     }
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
