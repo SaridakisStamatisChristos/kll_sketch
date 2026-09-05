@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - competitive-benchmark-2026-09
+      - v3.2-cold-merge-lab
   workflow_dispatch:
 
 permissions:
