@@ -32,9 +32,45 @@ A separate 31-trial fresh-destination merge gate (128 destinations per trial,
 alternating implementation order) measured a 32.61 us median versus 34.31 us for
 Apache, with kll-sketch winning 30/31 paired trials and a 1.049x median speed ratio.
 
-These are runner/workload characterizations, not portable guarantees. The
-`Apache KLL Benchmark Matrix` workflow extends the evidence over multiple `k`, `N`, and
-shard counts and preserves raw JSON/CSV artifacts.
+The broader release-candidate matrix swept `N={50k,250k,1m}` and
+`k={100,200,400,800}` over uniform, normal and duplicate-heavy inputs. On that Ubuntu
+24.04 / CPython 3.13.15 run:
+
+- ingestion was faster in 9/12 cells; the three non-wins were near parity at
+  0.983x-0.998x Apache;
+- repeated batched quantile query was faster in all 12 cells, about 1.52x-1.58x;
+- serialized footprint stayed within approximately -3.0% to +2.5% of Apache across the
+  measured cells;
+- rank-error observations were mixed and are not evidence of universal accuracy
+  superiority by either implementation.
+
+Sharded merge scaling at `N=250,000`, `k=200` measured:
+
+| Shards | kll-sketch | Apache KLL | Relative speed |
+| ---: | ---: | ---: | ---: |
+| 2 | 7.89 us | 8.21 us | 1.041x |
+| 4 | 20.77 us | **19.22 us** | **0.925x** |
+| 8 | **42.31 us** | 50.10 us | **1.184x** |
+| 16 | **77.65 us** | 85.28 us | **1.098x** |
+| 32 | **142.54 us** | 155.42 us | **1.090x** |
+
+These are runner/workload characterizations, not portable guarantees. The release claim
+is deliberately bounded: query performance was consistently stronger on the measured
+matrix, ingestion was usually stronger, merge won four of five measured shard counts,
+and Apache won the 4-shard merge point. The matrix workflow preserves JSON/CSV artifacts
+with peer/runtime metadata and the source commit.
+
+## Release engineering
+
+- same-process native-vs-reference performance regression CI with exact serialized-state
+  parity checks;
+- multi-`N`/multi-`k` Apache DataSketches KLL and sharded-merge characterization;
+- pre-tag universal wheel/sdist content, install and SHA-256 artifact validation;
+- source distribution includes `CITATION.cff`, `CONTRIBUTING.md`, and `SECURITY.md`;
+- PyPI publication is prepared for Trusted Publishing/OIDC and is triggered only by a
+  published GitHub Release using its exact tag;
+- Zenodo-ready citation metadata is present without inventing a DOI before an archive
+  exists.
 
 ## Compatibility
 
