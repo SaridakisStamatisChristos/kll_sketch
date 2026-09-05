@@ -36,6 +36,8 @@ if _native_impl is not None and hasattr(_native_impl, "install_type_fastpaths"):
         _native_merge_fallback,
         _NativeStateHandle,
     )
+    if hasattr(_native_impl, "install_v32_merge_fastpath"):
+        _native_impl.install_v32_merge_fastpath()
     if hasattr(_native_impl, "set_type_fastpaths_enabled"):
         _native_impl.set_type_fastpaths_enabled(native_enabled())
 else:
@@ -50,7 +52,7 @@ def set_native_enabled(enabled: bool) -> None:
         _native_impl.set_type_fastpaths_enabled(native_enabled())
 
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 # Historical benchmark-facing name. Alias rather than subclass so isinstance,
 # serialization and type identity stay simple and predictable.

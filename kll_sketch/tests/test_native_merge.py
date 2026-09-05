@@ -74,3 +74,32 @@ def test_resident_merge_syncs_cleanly_when_native_is_disabled() -> None:
         assert native_dst.to_bytes() == expected
     finally:
         set_native_enabled(True)
+
+
+def test_empty_destination_adoption_preserves_destination_rng_and_source() -> None:
+    source_values = array("d", ((i * 31) % 2003 - 1000.0 for i in range(18_000)))
+    # Large enough to force post-merge compactions. Different destination/source
+    # seeds make copying the source RNG state observable as a byte mismatch.
+    tail = array("d", ((i * 43) % 1601 - 800.0 for i in range(11_000)))
+
+    try:
+        set_native_enabled(False)
+        pure_src = KLL(80, 9102)
+        pure_src.extend(source_values)
+        expected_source = pure_src.to_bytes()
+        pure_dst = KLL(80, 9101)
+        pure_dst.merge(pure_src)
+        pure_dst.extend(tail)
+        expected_dst = pure_dst.to_bytes()
+
+        set_native_enabled(True)
+        native_src = KLL(80, 9102)
+        native_src.extend(source_values)
+        native_dst = KLL(80, 9101)
+        native_dst.merge(native_src)
+        native_dst.extend(tail)
+
+        assert native_dst.to_bytes() == expected_dst
+        assert native_src.to_bytes() == expected_source
+    finally:
+        set_native_enabled(True)

@@ -2,7 +2,7 @@
 
 A high-integrity, mergeable **KLL quantile sketch** for Python with reproducible seeded randomness, exact extrema, strict versioned serialization, rank-space validation, zero runtime dependencies, and an **optional C++17 native acceleration backend**.
 
-Version **3.1** keeps the v2/v3 public `KLL` API and `KLL2` wire format intact, but changes the native execution model substantially: compatible bulk workloads can now keep the KLL state resident in C++ across ingestion, merge, rank, and quantile calls instead of reconstructing native state for every operation. The pure-Python implementation remains the canonical portable fallback.
+Version **3.2** keeps the v2/v3 public `KLL` API and `KLL2` wire format intact while specializing the resident native merge engine. A fresh empty destination can now adopt an already-valid same-`k` resident source hierarchy directly, avoiding the v3.1 empty-state bootstrap and general merge planner. The destination keeps its own SplitMix64 RNG and compaction count, so later compactions remain byte-identical to the pure-Python reference. Non-empty merges stay on the proven v3.1 preflighted engine.
 
 ## Core guarantees
 
@@ -52,7 +52,7 @@ restored = KLL.from_bytes(blob)
 assert restored.to_bytes() == blob
 ```
 
-Version 3.1 does **not** introduce a new serialization format.
+Version 3.2 does **not** introduce a new serialization format.
 
 ## Public API
 
@@ -106,7 +106,8 @@ The optional extension uses the **CPython C API + C++17** directly. There is no 
 When the native backend is installed and enabled, compatible operations can transition a sketch into an opaque resident C++ state. While resident:
 
 - bulk ingestion evolves the C++ KLL state directly;
-- merges combine resident states with transactional rollback;
+- a merge into a fresh empty same-`k` destination can adopt the source hierarchy directly while preserving destination RNG/compaction state;
+- non-empty resident merges use the v3.1 structural preflight and exact compaction engine;
 - rank and quantile queries use a native weighted query view;
 - the hot `quantiles_at` method enters C++ through a direct CPython method descriptor;
 - successful resident merges return only the metadata Python needs immediately instead of rebuilding a full state tuple;
@@ -114,7 +115,7 @@ When the native backend is installed and enabled, compatible operations can tran
 
 This keeps `KLL` as the same Python class and preserves the pure implementation as an executable reference rather than exposing a separate native sketch type.
 
-The native state machine consumes the same SplitMix64 bits in the same places as Python. CI checks byte-identical `to_bytes()` results after native execution, including continued ingestion after resident merges.
+The native state machine consumes the same SplitMix64 bits in the same places as Python. CI checks byte-identical `to_bytes()` results after native execution, including continued ingestion after resident merges. The v3.2 empty-destination regression uses different source/destination seeds and forces later compactions specifically to prove that source RNG state is not accidentally inherited.
 
 ### SIMD policy
 
@@ -142,7 +143,7 @@ The default wheel stays universal and pure Python:
 
 ```bash
 python -m pip wheel .
-# kll_sketch-3.1.0-py3-none-any.whl
+# kll_sketch-3.2.0-py3-none-any.whl
 ```
 
 Native compilation is explicit:
@@ -206,7 +207,19 @@ Broader multi-library comparison:
 python benchmarks/competitive_quantiles.py --help
 ```
 
-The native benchmark aborts if native and Python serialized states differ. Competitive timings are hardware/runner observations, not universal performance guarantees.
+### v3.2 merge characterization
+
+On the v3.2 candidate gate (Ubuntu 24.04, CPython 3.13, `N=250000`, `k=200`, eight shards), the focused 200-destination public-API benchmark measured:
+
+| metric | kll-sketch native | Apache KLL 5.2 |
+|---|---:|---:|
+| geo-mean ingestion | 31.45M updates/s | 27.96M updates/s |
+| repeated query | 0.398 us | 0.653 us |
+| repeated eight-way merge | 50.19 us | 50.49 us |
+
+The broader two-trial cold-destination characterization measured 86.73 us for `kll-sketch-native` versus 66.45 us for Apache KLL. That cold benchmark is intentionally reported rather than hidden: v3.2 removes a meaningful first-merge bootstrap cost and reaches parity in the repeated merge gate, but Apache remains faster for the measured cold one-shot merge workload.
+
+These are observations of GitHub-hosted runners, not portable performance guarantees. The native benchmark aborts if native and Python serialized states differ.
 
 ## Validation and CI
 
@@ -221,6 +234,7 @@ CI validates:
 - native C++ on Linux/macOS/Windows across representative supported Python versions;
 - native/Python byte-level state parity;
 - resident merge → continued native ingestion → serialization parity;
+- empty-destination native merge → later compaction with different source/destination seeds → exact byte parity;
 - native-disable synchronization after resident operations;
 - invalid-input fallback and one-shot iterator safety;
 - signed-zero stability;
@@ -233,7 +247,7 @@ CI validates:
 
 ## Compatibility
 
-Version 3.1 preserves:
+Version 3.2 preserves:
 
 - the `KLL` / `KLLSketch` public class identity;
 - pure-Python behavior when native acceleration is unavailable or disabled;

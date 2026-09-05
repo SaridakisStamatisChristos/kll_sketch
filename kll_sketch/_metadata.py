@@ -16,7 +16,7 @@ class Author:
 
 PROJECT_METADATA: Mapping[str, object] = {
     "name": "kll-sketch",
-    "version": "3.1.0",
+    "version": "3.2.0",
     "summary": "High-integrity KLL streaming quantile sketch with optional resident C++17 and SIMD acceleration",
     "readme": {"path": _PROJECT_ROOT / "README.md", "content_type": "text/markdown"},
     "requires_python": ">=3.10",

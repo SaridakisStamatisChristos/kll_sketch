@@ -1,5 +1,42 @@
 # Changelog
 
+## 3.2.0
+
+### Merge engine
+
+- Added a specialized native fast path for merging an already-resident source into a fresh empty destination with the same configured `k`.
+- The destination adopts the source's already-valid level hierarchy and capacity metadata directly, avoiding empty-state bootstrap plus the general merge planner for the first merge.
+- Preserved destination SplitMix64 RNG state and destination compaction count rather than copying those fields from the source, matching the pure-Python merge semantics for all later compactions.
+- Preserved `min_k`, exact extrema, retained count, source immutability, and the existing non-empty resident merge engine.
+- Kept keyword, disabled-native, nonresident, mixed-`k`, unsupported, and fallback behavior on the established semantic paths.
+
+### Validation
+
+- Added an exact-state regression with different source/destination seeds that performs empty-destination adoption, forces later compactions, and requires byte-identical serialization against pure Python.
+- Verified the source sketch remains unchanged after the optimized merge.
+- Revalidated pure and native execution on Linux, macOS, and Windows across the existing supported Python matrix, including native-wheel and offline-install gates.
+
+### Performance characterization
+
+- On the retained Ubuntu 24.04 / CPython 3.13 focused gate (`N=250000`, `k=200`, eight shards), measured repeated eight-way merge at 50.19 us versus 50.49 us for Apache DataSketches KLL 5.2 on that runner.
+- The same focused run measured 31.45M updates/s versus 27.96M/s and 0.398 us versus 0.653 us for the repeated query set.
+- A separate broad cold-destination two-trial run measured 86.73 us versus Apache's 66.45 us; this remaining cold one-shot gap is documented rather than hidden.
+- Competitive timings remain runner observations, not portable guarantees.
+
+### Rejected experiments
+
+- Rejected lazy sorted-shadow invalidation/rebuild after it regressed focused merge to roughly 152 us versus roughly 49 us for Apache.
+- Rejected skipping the planner for non-compacting resident merges after it regressed the focused merge ratio.
+- Rejected peak-allocation pre-reservation after it also regressed the focused merge ratio.
+- Retained only the empty-destination adoption optimization that demonstrated a measurable benefit while preserving exact semantics.
+
+### Compatibility
+
+- Public `KLL` / `KLLSketch` API identity is unchanged.
+- `KLL2` serialization is unchanged and `KLL1` remains readable.
+- Default wheel remains pure `py3-none-any`; native wheels remain explicit platform-local builds.
+- Removing or disabling the native extension changes performance, not functionality.
+
 ## 3.1.0
 
 ### Resident native state
