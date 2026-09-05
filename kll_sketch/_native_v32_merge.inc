@@ -240,7 +240,7 @@ bool compact_level_elided_v32(
     std::size_t h,
     std::uint64_t& raw_elided_mask
 ) {
-    if (h >= s.levels.size() || s.sorted[h].size() < 2U) {
+    if (h >= s.levels.size()) {
         PyErr_SetString(PyExc_RuntimeError, "native state attempted invalid v3.2 compaction");
         return false;
     }
@@ -251,6 +251,10 @@ bool compact_level_elided_v32(
         s.sorted[0] = s.levels[0];
         sort_level(s.sorted[0]);
         s.level0_sorted = true;
+    }
+    if (s.sorted[h].size() < 2U) {
+        PyErr_SetString(PyExc_RuntimeError, "native state attempted invalid v3.2 compaction");
+        return false;
     }
     if (!raw_elided && s.sorted[h].size() != s.levels[h].size()) {
         PyErr_SetString(PyExc_RuntimeError, "native sorted shadow is out of sync");
@@ -287,8 +291,6 @@ bool compact_level_elided_v32(
     const std::size_t next_sorted_old = next_sorted.size();
 
     if (next_raw_elided) {
-        // The next level is itself guaranteed to compact before merge returns.
-        // Append the already-sorted promoted run only to its sorted shadow.
         next_sorted.reserve(next_sorted_old + promoted_count);
         for (std::size_t i = start + static_cast<std::size_t>(offset); i < stop; i += 2U) {
             next_sorted.push_back(source[i]);
@@ -301,8 +303,6 @@ bool compact_level_elided_v32(
                 [](double a, double b) { return a < b; });
         }
     } else {
-        // This level survives the merge, so maintain its exact canonical raw
-        // append order as well as the sorted compaction shadow.
         auto& raw_next = s.levels[next_h];
         const std::size_t raw_next_old = raw_next.size();
         raw_next.reserve(raw_next_old + promoted_count);
@@ -345,7 +345,6 @@ bool compress_elided_v32(SketchState& s, std::uint64_t& raw_elided_mask) {
         std::size_t h = 0;
         bool found = false;
         for (; h < s.levels.size(); ++h) {
-            // Elided raw levels may be smaller than their logical sorted shadow.
             const std::size_t logical_size = (h > 0U && h < 64U &&
                 ((raw_elided_mask >> h) & 1ULL)) ? s.sorted[h].size() : s.levels[h].size();
             if (logical_size > s.capacities[h]) {
@@ -382,9 +381,6 @@ bool merge_resident_states_v32(
     if (!preflight_resident_merge_v32(dst, src, plan)) return false;
     if (!ensure_levels(dst, plan.initial_levels)) return false;
 
-    // Level zero is intentionally excluded. Its sorted shadow may be lazy after
-    // ingestion, while every higher-level shadow is authoritative. Higher levels
-    // proven to compact can safely omit raw appends until their compaction.
     std::uint64_t raw_elided_mask = plan.compact_mask & ~1ULL;
 
     mutation_started = true;
@@ -508,7 +504,6 @@ PyObject* fast_merge_method_v32(
     }
     if (PyErr_Occurred()) return nullptr;
 
-    // Nonresident destination: retain the specialized same-k empty adoption.
     PyObject* src_capsule = nullptr;
     SketchState* src = resident_state_from_kll(other, &src_capsule);
     if (!src) {
