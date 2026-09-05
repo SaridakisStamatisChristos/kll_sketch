@@ -10,6 +10,9 @@ struct SketchState {
     std::uint64_t total_capacity = 0;
     std::uint64_t n = 0;
     std::uint64_t k = 0;
+    // v3.2 merge metadata cache. Zero means "not loaded from the owning KLL
+    // object yet"; valid public k/min_k values are always >= 40.
+    std::uint64_t min_k_cache = 0;
     std::uint64_t rng_state = 0;
     std::uint64_t compactions = 0;
     std::uint64_t retained = 0;
