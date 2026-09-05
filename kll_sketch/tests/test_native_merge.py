@@ -103,3 +103,40 @@ def test_empty_destination_adoption_preserves_destination_rng_and_source() -> No
         assert native_src.to_bytes() == expected_source
     finally:
         set_native_enabled(True)
+
+
+def test_multi_shard_resident_cascade_is_byte_exact() -> None:
+    """Exercise the v3.2 lazy-level0 + higher-level elision cascade."""
+    shards = [
+        array(
+            "d",
+            (((i * 6000 + j) * 37) % 10007 - 5000.0 for j in range(6000)),
+        )
+        for i in range(8)
+    ]
+
+    try:
+        set_native_enabled(False)
+        pure_sources = []
+        for i, values in enumerate(shards):
+            src = KLL(80, 12_000 + i)
+            src.extend(values)
+            pure_sources.append(src)
+        pure_dst = KLL(80, 20_000)
+        for src in pure_sources:
+            pure_dst.merge(src)
+        expected = pure_dst.to_bytes()
+
+        set_native_enabled(True)
+        native_sources = []
+        for i, values in enumerate(shards):
+            src = KLL(80, 12_000 + i)
+            src.extend(values)
+            native_sources.append(src)
+        native_dst = KLL(80, 20_000)
+        for src in native_sources:
+            native_dst.merge(src)
+
+        assert native_dst.to_bytes() == expected
+    finally:
+        set_native_enabled(True)
