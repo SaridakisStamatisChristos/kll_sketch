@@ -37,21 +37,28 @@ def test_native_min_k_cache_survives_keyword_fallback_then_fast_merge() -> None:
         pure_dst = _build(200, 8100, 0, 4_000, native=False)
         pure_same = _build(200, 8101, 10_000, 4_000, native=False)
         pure_low = _build(80, 8102, 20_000, 4_000, native=False)
+        pure_middle = _build(100, 8104, 25_000, 4_000, native=False)
         pure_lower = _build(40, 8103, 30_000, 4_000, native=False)
         pure_dst.merge(pure_same)
         pure_dst.merge(other=pure_low)
+        pure_dst.merge(pure_middle)
+        assert pure_dst.min_k == 80
         pure_dst.merge(pure_lower)
 
         # Positional merge populates the resident fast-path cache. Keyword merge
-        # intentionally enters the Python fallback; the following positional
-        # merge must reload any invalidated min_k cache rather than use stale C++
-        # metadata.
+        # deliberately enters the Python fallback and lowers min_k to 80. The
+        # following positional source has min_k=100: a stale native cache of 200
+        # would incorrectly *raise* the destination to 100 unless the fast path
+        # revalidates the authoritative Python value before tightening it.
         native_dst = _build(200, 8100, 0, 4_000, native=True)
         native_same = _build(200, 8101, 10_000, 4_000, native=True)
         native_low = _build(80, 8102, 20_000, 4_000, native=True)
+        native_middle = _build(100, 8104, 25_000, 4_000, native=True)
         native_lower = _build(40, 8103, 30_000, 4_000, native=True)
         native_dst.merge(native_same)
         native_dst.merge(other=native_low)
+        native_dst.merge(native_middle)
+        assert native_dst.min_k == 80
         native_dst.merge(native_lower)
 
         assert native_dst.min_k == pure_dst.min_k == 40
