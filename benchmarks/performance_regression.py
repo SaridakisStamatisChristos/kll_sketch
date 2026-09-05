@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Stable same-process performance regression gates for the optional native backend.
 
-The benchmark compares native and pure-Python execution in the same interpreter,
-on identical deterministic inputs and seeds. It is intentionally conservative:
-ratios, not absolute wall-clock numbers, are gated on shared CI runners.
+The benchmark compares native and pure-Python execution in the same interpreter on
+identical deterministic inputs and seeds. Trials alternate implementation order to
+reduce thermal/scheduler bias. CI gates on conservative ratios, not absolute wall-clock
+numbers, and exact serialized-state parity is required throughout.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import statistics
 import sys
@@ -24,17 +26,23 @@ from kll_sketch import KLL, __version__, native_backend_info, native_available, 
 QS = (0.001, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999)
 
 
+def _source_sha() -> str | None:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path:
+        try:
+            payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
+            pull_request = payload.get("pull_request") or {}
+            head = pull_request.get("head") or {}
+            sha = head.get("sha")
+            if sha:
+                return str(sha)
+        except (OSError, ValueError, TypeError):
+            pass
+    return os.environ.get("GITHUB_SHA")
+
+
 def _values(n: int) -> list[float]:
     return [((i * 1103515245 + 12345) & 0xFFFFFFFF) / 2**32 for i in range(n)]
-
-
-def _median_time(callable_, repeats: int) -> float:
-    samples: list[float] = []
-    for _ in range(repeats):
-        start = time.perf_counter_ns()
-        callable_()
-        samples.append((time.perf_counter_ns() - start) / 1e9)
-    return statistics.median(samples)
 
 
 def _build(data: list[float], *, enabled: bool, k: int, seed: int) -> KLL:
@@ -45,31 +53,62 @@ def _build(data: list[float], *, enabled: bool, k: int, seed: int) -> KLL:
     return sk
 
 
-def _ingestion(data: list[float], *, enabled: bool, k: int, seed: int, trials: int) -> tuple[float, bytes]:
-    rates: list[float] = []
-    last = b""
-    for i in range(trials):
-        set_native_enabled(enabled)
-        start = time.perf_counter_ns()
-        sk = KLL(k, seed + i)
-        sk.extend(data)
-        elapsed = (time.perf_counter_ns() - start) / 1e9
-        sk.validate()
-        rates.append(len(data) / elapsed)
-        last = sk.to_bytes()
-    return statistics.median(rates), last
+def _ingestion_once(data: list[float], *, enabled: bool, k: int, seed: int) -> tuple[float, bytes]:
+    set_native_enabled(enabled)
+    start = time.perf_counter_ns()
+    sk = KLL(k, seed)
+    sk.extend(data)
+    elapsed = (time.perf_counter_ns() - start) / 1e9
+    sk.validate()
+    return len(data) / elapsed, sk.to_bytes()
 
 
-def _query(sk: KLL, *, enabled: bool, loops: int, trials: int) -> float:
-    latencies: list[float] = []
-    for _ in range(trials):
-        set_native_enabled(enabled)
+def _paired_ingestion(data: list[float], *, k: int, seed: int, trials: int) -> tuple[float, float]:
+    pure_rates: list[float] = []
+    native_rates: list[float] = []
+    for trial in range(trials):
+        measurements: dict[bool, tuple[float, bytes]] = {}
+        order = (False, True) if trial % 2 == 0 else (True, False)
+        for enabled in order:
+            measurements[enabled] = _ingestion_once(
+                data, enabled=enabled, k=k, seed=seed + trial
+            )
+        if measurements[False][1] != measurements[True][1]:
+            raise AssertionError("native ingestion state diverged from pure Python")
+        pure_rates.append(measurements[False][0])
+        native_rates.append(measurements[True][0])
+    return statistics.median(pure_rates), statistics.median(native_rates)
+
+
+def _query_once(sk: KLL, *, enabled: bool, loops: int) -> float:
+    set_native_enabled(enabled)
+    sk.quantiles_at(QS)
+    start = time.perf_counter_ns()
+    for _ in range(loops):
         sk.quantiles_at(QS)
-        start = time.perf_counter_ns()
-        for _ in range(loops):
-            sk.quantiles_at(QS)
-        latencies.append((time.perf_counter_ns() - start) / loops / 1e3)
-    return statistics.median(latencies)
+    return (time.perf_counter_ns() - start) / loops / 1e3
+
+
+def _paired_query(
+    pure_sk: KLL,
+    native_sk: KLL,
+    *,
+    loops: int,
+    trials: int,
+) -> tuple[float, float]:
+    if pure_sk.to_bytes() != native_sk.to_bytes():
+        raise AssertionError("query fixtures do not have identical state")
+    pure_latencies: list[float] = []
+    native_latencies: list[float] = []
+    sketches = {False: pure_sk, True: native_sk}
+    for trial in range(trials):
+        measurements: dict[bool, float] = {}
+        order = (False, True) if trial % 2 == 0 else (True, False)
+        for enabled in order:
+            measurements[enabled] = _query_once(sketches[enabled], enabled=enabled, loops=loops)
+        pure_latencies.append(measurements[False])
+        native_latencies.append(measurements[True])
+    return statistics.median(pure_latencies), statistics.median(native_latencies)
 
 
 def _sources(data: list[float], *, enabled: bool, k: int, seed: int, shards: int) -> list[KLL]:
@@ -87,31 +126,60 @@ def _sources(data: list[float], *, enabled: bool, k: int, seed: int, shards: int
     return out
 
 
-def _merge(
+def _merge_once(
     sources: list[KLL],
     *,
     enabled: bool,
     k: int,
     seed: int,
     loops: int,
-    trials: int,
     expected_n: int,
 ) -> tuple[float, bytes]:
-    timings: list[float] = []
-    representative = b""
+    set_native_enabled(enabled)
+    destinations = [KLL(k, seed + i) for i in range(loops)]
+    start = time.perf_counter_ns()
+    for dst in destinations:
+        for src in sources:
+            dst.merge(src)
+    elapsed_us = (time.perf_counter_ns() - start) / loops / 1e3
+    if any(dst.n != expected_n for dst in destinations):
+        raise AssertionError("merge produced incorrect represented mass")
+    return elapsed_us, destinations[0].to_bytes()
+
+
+def _paired_merge(
+    pure_sources: list[KLL],
+    native_sources: list[KLL],
+    *,
+    k: int,
+    seed: int,
+    loops: int,
+    trials: int,
+    expected_n: int,
+) -> tuple[float, float]:
+    if [s.to_bytes() for s in pure_sources] != [s.to_bytes() for s in native_sources]:
+        raise AssertionError("merge source states diverged")
+    pure_timings: list[float] = []
+    native_timings: list[float] = []
+    sources = {False: pure_sources, True: native_sources}
     for trial in range(trials):
-        set_native_enabled(enabled)
-        destinations = [KLL(k, seed + 50000 + trial * loops + i) for i in range(loops)]
-        start = time.perf_counter_ns()
-        for dst in destinations:
-            for src in sources:
-                dst.merge(src)
-        elapsed_us = (time.perf_counter_ns() - start) / loops / 1e3
-        if any(dst.n != expected_n for dst in destinations):
-            raise AssertionError("merge produced incorrect represented mass")
-        timings.append(elapsed_us)
-        representative = destinations[0].to_bytes()
-    return statistics.median(timings), representative
+        measurements: dict[bool, tuple[float, bytes]] = {}
+        order = (False, True) if trial % 2 == 0 else (True, False)
+        trial_seed = seed + 50_000 + trial * loops
+        for enabled in order:
+            measurements[enabled] = _merge_once(
+                sources[enabled],
+                enabled=enabled,
+                k=k,
+                seed=trial_seed,
+                loops=loops,
+                expected_n=expected_n,
+            )
+        if measurements[False][1] != measurements[True][1]:
+            raise AssertionError("native merge state diverged from pure Python")
+        pure_timings.append(measurements[False][0])
+        native_timings.append(measurements[True][0])
+    return statistics.median(pure_timings), statistics.median(native_timings)
 
 
 def main() -> None:
@@ -123,62 +191,50 @@ def main() -> None:
     p.add_argument("--trials", type=int, default=5)
     p.add_argument("--query-loops", type=int, default=2000)
     p.add_argument("--merge-loops", type=int, default=96)
-    p.add_argument("--min-ingestion-speedup", type=float, default=1.15)
-    p.add_argument("--min-query-speedup", type=float, default=1.05)
-    p.add_argument("--min-merge-speedup", type=float, default=1.05)
+    p.add_argument("--min-ingestion-speedup", type=float, default=50.0)
+    p.add_argument("--min-query-speedup", type=float, default=5.0)
+    p.add_argument("--min-merge-speedup", type=float, default=5.0)
     p.add_argument("--out", type=Path, default=Path("performance_regression.json"))
     args = p.parse_args()
 
     if args.N <= 0 or args.trials < 3 or args.query_loops <= 0 or args.merge_loops <= 0:
         raise SystemExit("N/query-loops/merge-loops must be positive and trials must be >= 3")
-    if args.shards < 2:
-        raise SystemExit("shards must be >= 2")
+    if args.k < 40:
+        raise SystemExit("k must be >= 40")
+    if args.shards < 2 or args.shards > args.N:
+        raise SystemExit("shards must be between 2 and N")
+    if min(args.min_ingestion_speedup, args.min_query_speedup, args.min_merge_speedup) <= 0:
+        raise SystemExit("performance thresholds must be positive")
     if not native_available():
         raise SystemExit("native extension is required")
 
     data = _values(args.N)
     info = native_backend_info()
     try:
-        pure_ingest, pure_bytes = _ingestion(
-            data, enabled=False, k=args.k, seed=args.seed, trials=args.trials
+        pure_ingest, native_ingest = _paired_ingestion(
+            data, k=args.k, seed=args.seed, trials=args.trials
         )
-        native_ingest, native_bytes = _ingestion(
-            data, enabled=True, k=args.k, seed=args.seed, trials=args.trials
-        )
-        if pure_bytes != native_bytes:
-            raise AssertionError("native ingestion state diverged from pure Python")
 
         pure_query_sk = _build(data, enabled=False, k=args.k, seed=args.seed + 777)
         native_query_sk = _build(data, enabled=True, k=args.k, seed=args.seed + 777)
-        if pure_query_sk.to_bytes() != native_query_sk.to_bytes():
-            raise AssertionError("query fixtures do not have identical state")
-        native_query = _query(native_query_sk, enabled=True, loops=args.query_loops, trials=args.trials)
-        pure_query = _query(pure_query_sk, enabled=False, loops=args.query_loops, trials=args.trials)
+        pure_query, native_query = _paired_query(
+            pure_query_sk,
+            native_query_sk,
+            loops=args.query_loops,
+            trials=args.trials,
+        )
 
         pure_sources = _sources(data, enabled=False, k=args.k, seed=args.seed, shards=args.shards)
         native_sources = _sources(data, enabled=True, k=args.k, seed=args.seed, shards=args.shards)
-        if [s.to_bytes() for s in pure_sources] != [s.to_bytes() for s in native_sources]:
-            raise AssertionError("merge source states diverged")
-        native_merge, native_merge_bytes = _merge(
-            native_sources,
-            enabled=True,
-            k=args.k,
-            seed=args.seed,
-            loops=args.merge_loops,
-            trials=args.trials,
-            expected_n=args.N,
-        )
-        pure_merge, pure_merge_bytes = _merge(
+        pure_merge, native_merge = _paired_merge(
             pure_sources,
-            enabled=False,
+            native_sources,
             k=args.k,
             seed=args.seed,
             loops=args.merge_loops,
             trials=args.trials,
             expected_n=args.N,
         )
-        if native_merge_bytes != pure_merge_bytes:
-            raise AssertionError("native merge state diverged from pure Python")
     finally:
         set_native_enabled(True)
 
@@ -200,6 +256,9 @@ def main() -> None:
             "trials": args.trials,
             "query_loops": args.query_loops,
             "merge_loops": args.merge_loops,
+            "source_sha": _source_sha(),
+            "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+            "ordering": "paired trials with alternating implementation order",
         },
         "medians": {
             "pure_updates_per_s": pure_ingest,
