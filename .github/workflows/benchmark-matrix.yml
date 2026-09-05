@@ -11,8 +11,15 @@ on:
       - "benchmarks/competitive_kll_matrix.py"
       - ".github/workflows/benchmark-matrix.yml"
   push:
+    branches: [main]
     tags:
       - "v*"
+    paths:
+      - "kll_sketch/_native*"
+      - "kll_sketch/kll_sketch.py"
+      - "benchmarks/competitive_kll_focus.py"
+      - "benchmarks/competitive_kll_matrix.py"
+      - ".github/workflows/benchmark-matrix.yml"
 
 permissions:
   contents: read
