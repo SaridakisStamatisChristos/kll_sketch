@@ -13,8 +13,17 @@ on:
       - ".github/workflows/release-artifacts.yml"
   workflow_dispatch:
   push:
+    branches: [main]
     tags:
       - "v*"
+    paths:
+      - "kll_sketch/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "CITATION.cff"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/workflows/release-artifacts.yml"
 
 permissions:
   contents: read
@@ -34,9 +43,10 @@ jobs:
           import os
           from kll_sketch import __version__
           ref = os.environ.get("GITHUB_REF_NAME", "")
+          ref_type = os.environ.get("GITHUB_REF_TYPE", "")
           event = os.environ.get("GITHUB_EVENT_NAME", "")
-          print("version", __version__, "ref", ref, "event", event)
-          if event == "push" and ref != f"v{__version__}":
+          print("version", __version__, "ref", ref, "ref_type", ref_type, "event", event)
+          if event == "push" and ref_type == "tag" and ref != f"v{__version__}":
               raise SystemExit(f"tag {ref!r} does not match package version v{__version__}")
           PY
       - name: Run release test suite
