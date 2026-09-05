@@ -30,6 +30,7 @@ namespace kll_state_addon {
 #include "_native_state_bindings.inc"
 #include "_native_type_fastpaths.inc"
 #include "_native_v32_merge.inc"
+#include "_native_v32_planned_merge.inc"
 } // namespace kll_state_addon
 
 extern "C" PyObject* PyInit__native_base(void);
@@ -39,7 +40,8 @@ PyMODINIT_FUNC PyInit__native(void) {
     if (!module) return nullptr;
     if (PyModule_AddFunctions(module, kll_state_addon::addon_methods) < 0 ||
         PyModule_AddFunctions(module, kll_state_addon::type_fastpath_methods) < 0 ||
-        PyModule_AddFunctions(module, kll_state_addon::v32_merge_methods) < 0) {
+        PyModule_AddFunctions(module, kll_state_addon::v32_merge_methods) < 0 ||
+        PyModule_AddFunctions(module, kll_state_addon::v32_planned_merge_methods) < 0) {
         Py_DECREF(module);
         return nullptr;
     }
