@@ -2,7 +2,7 @@
 
 A high-integrity, mergeable **KLL quantile sketch** for Python with reproducible seeded randomness, exact extrema, strict versioned serialization, rank-space validation, zero runtime dependencies, and an **optional C++17 native acceleration backend**.
 
-Version **3.0** preserves the v2 algorithm, public `KLL` class, and `KLL2` wire format. Native code is an optimization layer: if it is absent or disabled, the same API runs through the canonical pure-Python implementation.
+Version **3.1** keeps the v2/v3 public `KLL` API and `KLL2` wire format intact, but changes the native execution model substantially: compatible bulk workloads can now keep the KLL state resident in C++ across ingestion, merge, rank, and quantile calls instead of reconstructing native state for every operation. The pure-Python implementation remains the canonical portable fallback.
 
 ## Core guarantees
 
@@ -15,7 +15,8 @@ Version **3.0** preserves the v2 algorithm, public `KLL` class, and `KLL2` wire 
 - repeated queries share a mutation-invalidated weighted view;
 - `KLL2` payloads are checksummed and hostile input fails closed;
 - historical `KLL1` payloads remain readable;
-- native execution is differential-tested against Python down to serialized state.
+- native execution is differential-tested against Python down to serialized state;
+- disabling the extension changes performance, not the public semantics.
 
 ## Quick start
 
@@ -51,7 +52,7 @@ restored = KLL.from_bytes(blob)
 assert restored.to_bytes() == blob
 ```
 
-Version 3.0 does **not** introduce a new serialization format.
+Version 3.1 does **not** introduce a new serialization format.
 
 ## Public API
 
@@ -100,26 +101,30 @@ These are characterization values, not per-instance proofs. See [`docs/algorithm
 
 The optional extension uses the **CPython C API + C++17** directly. There is no pybind11, Cython, NumPy, setuptools, Meson, or scikit-build dependency.
 
-Accelerated operations include:
+### Resident-state execution
 
-- transactional bulk ingestion and KLL compaction;
-- contiguous native-`double` buffer ingestion such as `array('d')`;
-- stable level compaction sorting;
-- weighted query-view materialization;
-- batched rank lookup;
-- batched quantile lookup.
+When the native backend is installed and enabled, compatible operations can transition a sketch into an opaque resident C++ state. While resident:
 
-The native state machine consumes the same SplitMix64 bits in the same places as Python. CI therefore checks byte-identical `to_bytes()` results, not merely statistically similar quantiles.
+- bulk ingestion evolves the C++ KLL state directly;
+- merges combine resident states with transactional rollback;
+- rank and quantile queries use a native weighted query view;
+- the hot `quantiles_at` method enters C++ through a direct CPython method descriptor;
+- successful resident merges return only the metadata Python needs immediately instead of rebuilding a full state tuple;
+- serialization, validation, copying, weighted/scalar fallbacks, or disabling native materialize the canonical Python levels on demand.
+
+This keeps `KLL` as the same Python class and preserves the pure implementation as an executable reference rather than exposing a separate native sketch type.
+
+The native state machine consumes the same SplitMix64 bits in the same places as Python. CI checks byte-identical `to_bytes()` results after native execution, including continued ingestion after resident merges.
 
 ### SIMD policy
 
-On GCC/Clang x86 builds, compatible contiguous `double` buffers use a **runtime-dispatched AVX2 finite-value scan** when AVX2 is present. Extrema are then reduced with Python-equivalent comparison/tie semantics so signed zero cannot change serialized state. The extension is not globally compiled with `-mavx2`, so older x86 CPUs retain a scalar path. Non-x86 and current MSVC builds use the scalar scan while retaining the rest of the C++ engine.
+On GCC/Clang x86 builds, compatible contiguous native-`double` buffers use a **runtime-dispatched AVX2 scan** that validates finiteness and reduces extrema four doubles at a time. Signed-zero batches take the tie-preserving path required for Python-equivalent serialized state. The extension is not globally compiled with `-mavx2`, so older x86 CPUs remain safe. Non-x86 and current MSVC builds use the scalar scanner while retaining the rest of the C++ engine.
 
 ```python
 from kll_sketch import native_backend_info
 print(native_backend_info())
 # {'available': True, 'enabled': True, 'compiler': 'gcc',
-#  'simd': 'avx2-runtime', 'api_version': 1}
+#  'simd': 'avx2-runtime', 'api_version': 1, 'persistent_state': True}
 ```
 
 ### Build native in a checkout
@@ -137,7 +142,7 @@ The default wheel stays universal and pure Python:
 
 ```bash
 python -m pip wheel .
-# kll_sketch-3.0.0-py3-none-any.whl
+# kll_sketch-3.1.0-py3-none-any.whl
 ```
 
 Native compilation is explicit:
@@ -188,14 +193,20 @@ python -m kll_sketch._native_build
 python benchmarks/bench_native.py --N 300000 --k 200
 ```
 
-The native benchmark aborts if native and Python serialized states differ.
-
-Optional Apache DataSketches comparison:
+Focused public-API comparison against Apache DataSketches KLL:
 
 ```bash
-python -m pip install '.[compare]'
-python benchmarks/compare_datasketches.py --N 1000000 --k 200
+python -m pip install numpy datasketches
+python benchmarks/competitive_kll_focus.py --N 250000 --k 200 --trials 5
 ```
+
+Broader multi-library comparison:
+
+```bash
+python benchmarks/competitive_quantiles.py --help
+```
+
+The native benchmark aborts if native and Python serialized states differ. Competitive timings are hardware/runner observations, not universal performance guarantees.
 
 ## Validation and CI
 
@@ -209,6 +220,8 @@ CI validates:
 - pure Python on Linux/macOS/Windows × Python 3.10–3.14;
 - native C++ on Linux/macOS/Windows across representative supported Python versions;
 - native/Python byte-level state parity;
+- resident merge → continued native ingestion → serialization parity;
+- native-disable synchronization after resident operations;
 - invalid-input fallback and one-shot iterator safety;
 - signed-zero stability;
 - enormous-rank (`n > 2**53`) query fallback;
@@ -218,33 +231,16 @@ CI validates:
 - rank-space regression gates;
 - native speed regression gates.
 
-## Offline pure installation
+## Compatibility
 
-The in-tree PEP 517 backend has no third-party build dependency. A normal source install remains index-independent:
+Version 3.1 preserves:
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-PIP_NO_INDEX=1 python -m pip install --no-index .
-```
+- the `KLL` / `KLLSketch` public class identity;
+- pure-Python behavior when native acceleration is unavailable or disabled;
+- KLL2 serialization bytes for equivalent canonical state;
+- KLL1 read compatibility;
+- scalar and weighted update semantics;
+- merge `min_k` semantics;
+- seeded deterministic compaction semantics.
 
-Native compilation is always explicit.
-
-## Compatibility notes for 3.0
-
-- Python 3.10+ remains supported.
-- `KLL`/`KLLSketch` identity is unchanged.
-- KLL2 serialization is unchanged; KLL1 remains readable.
-- Native acceleration is optional and removable without losing functionality.
-- unsupported native inputs replay through the canonical Python path;
-- quantile lookup falls back to Python when cumulative integer ranks exceed exact binary64 integer range (`2**53`);
-- default wheels remain `py3-none-any`.
-
-## References
-
-- Zohar Karnin, Kevin Lang, Edo Liberty, **Optimal Quantile Approximation in Streams**, FOCS 2016.
-- Apache DataSketches KLL implementations and characterization methodology.
-
-## License
-
-Apache License 2.0.
+See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for release details.

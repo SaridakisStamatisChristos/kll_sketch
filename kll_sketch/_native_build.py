@@ -1,22 +1,16 @@
-"""Dependency-free builder for the optional C++17 acceleration module.
-
-This module is intentionally kept out of runtime wheels. It exists in source
-archives/checkouts so native builds can be requested without setuptools,
-pybind11, Cython, Meson, or scikit-build.
-"""
+"""Dependency-free builder for the optional C++17 acceleration module."""
 from __future__ import annotations
 
 import argparse
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 import sys
 import sysconfig
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-SOURCE = PACKAGE_DIR / "_native.cpp"
+SOURCES = (PACKAGE_DIR / "_native.cpp", PACKAGE_DIR / "_native_state.cpp")
 
 
 class NativeBuildError(RuntimeError):
@@ -39,11 +33,15 @@ def _run(command: list[str]) -> None:
         raise NativeBuildError(f"native compilation failed with exit code {exc.returncode}") from exc
 
 
+def _check_sources() -> None:
+    missing = [str(source) for source in SOURCES if not source.exists()]
+    if missing:
+        raise NativeBuildError(f"missing native source: {', '.join(missing)}")
+
+
 def _unix_command(target: Path) -> list[str]:
     raw_cxx = os.environ.get("CXX") or sysconfig.get_config_var("CXX") or "c++"
-    compiler = shlex.split(str(raw_cxx))
-    if not compiler:
-        compiler = ["c++"]
+    compiler = shlex.split(str(raw_cxx)) or ["c++"]
     include = sysconfig.get_paths()["include"]
     command = compiler + [
         "-O3",
@@ -51,8 +49,9 @@ def _unix_command(target: Path) -> list[str]:
         "-std=c++17",
         "-fPIC",
         "-shared",
+        "-DPyInit__native=PyInit__native_base",
         f"-I{include}",
-        str(SOURCE),
+        *(str(source) for source in SOURCES),
         "-o",
         str(target),
     ]
@@ -67,8 +66,7 @@ def _unix_command(target: Path) -> list[str]:
 def _windows_command(target: Path) -> list[str]:
     compiler = os.environ.get("CXX", "cl")
     include = sysconfig.get_paths()["include"]
-    base = Path(sys.base_prefix)
-    libs = base / "libs"
+    libs = Path(sys.base_prefix) / "libs"
     library = f"python{sys.version_info.major}{sys.version_info.minor}.lib"
     command = [
         compiler,
@@ -78,8 +76,9 @@ def _windows_command(target: Path) -> list[str]:
         "/EHsc",
         "/std:c++17",
         "/LD",
+        "/DPyInit__native=PyInit__native_base",
         f"/I{include}",
-        str(SOURCE),
+        *(str(source) for source in SOURCES),
         "/link",
         f"/LIBPATH:{libs}",
         library,
@@ -93,8 +92,7 @@ def _windows_command(target: Path) -> list[str]:
 
 def build_native(output_dir: str | os.PathLike[str] | None = None, *, force: bool = True) -> Path:
     """Compile ``_native`` into *output_dir* and return the extension path."""
-    if not SOURCE.exists():
-        raise NativeBuildError(f"missing native source: {SOURCE}")
+    _check_sources()
     destination = Path(output_dir) if output_dir is not None else PACKAGE_DIR
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / extension_filename()
@@ -114,7 +112,7 @@ def clean_native(output_dir: str | os.PathLike[str] | None = None) -> None:
     target = destination / extension_filename()
     if target.exists():
         target.unlink()
-    for pattern in ("_native.obj", "_native.exp", "_native.lib"):
+    for pattern in ("_native.obj", "_native.exp", "_native.lib", "_native_state.obj"):
         candidate = destination / pattern
         if candidate.exists():
             candidate.unlink()

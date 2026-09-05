@@ -1,5 +1,48 @@
 # Changelog
 
+## 3.1.0
+
+### Resident native state
+
+- Added a persistent C++ `SketchState` so compatible sketches can remain native across ingestion, merge, rank, and quantile calls instead of reconstructing native state for every operation.
+- Kept `KLL` as the same public Python class; resident state is an internal optimization and pure Python remains the canonical fallback/reference implementation.
+- Added on-demand synchronization back to canonical Python levels for serialization, validation, copying, weighted/scalar fallback, and native-disable boundaries.
+- Preserved seeded SplitMix64 compaction state, exact extrema, retained-count accounting, and KLL2 serialization semantics across resident execution.
+
+### Query path
+
+- Added a direct CPython method descriptor for hot `KLL.quantiles_at` calls when resident native state is available.
+- Retained the Python runtime dispatcher as the semantic fallback for cold state, disabled native mode, invalid/unsupported inputs, and represented mass above `2**53`.
+- Kept mutation-invalidated resident weighted query views for repeated rank/quantile workloads.
+
+### Merge path
+
+- Added journaled resident-state merge rollback so successful merges avoid cloning the entire destination sketch while failed native operations can restore destination state.
+- Added a compact successful-merge handoff that returns only the retained count needed immediately by Python; native RNG and compaction internals remain authoritative until synchronization.
+- Added exact resident merge parity tests covering continued native ingestion after merge and synchronization immediately after native is disabled.
+- Rejected benchmark-regressing alternatives during development, including fixed 64-level payload journals, direct public C-level merge dispatch, and blanket deferred higher-level sorting.
+
+### SIMD / ingestion
+
+- Fused AVX2 finiteness validation and extrema reduction for compatible contiguous native-double buffers on supported GCC/Clang x86 builds.
+- Preserved signed-zero/extrema tie semantics with the canonical tie-preserving path.
+- Retained runtime AVX2 detection and scalar fallback; the extension is still not globally built with `-mavx2`.
+
+### Benchmarking / CI
+
+- Added a focused same-runner public-API benchmark against Apache DataSketches KLL covering ingestion, repeated batched quantiles, eight-way merge, serialized size, and observed rank error.
+- Added a broader multi-library competitive quantile benchmark workflow.
+- Added same-process optimization controls during development to distinguish implementation effects from shared-runner variance; experimental controls are not part of the production benchmark path.
+- Extended native regression coverage for resident merge state and native-disable synchronization.
+- Preserved Linux/macOS/Windows native and pure-Python matrices, packaging checks, offline installation, native differential speed gates, and byte-level parity validation.
+
+### Compatibility
+
+- Public `KLL` / `KLLSketch` API identity is unchanged.
+- `KLL2` serialization is unchanged and `KLL1` remains readable.
+- Default wheel remains pure `py3-none-any`; native wheels remain explicit platform-local builds.
+- Removing or disabling the native extension changes performance, not functionality.
+
 ## 3.0.0
 
 ### Native acceleration

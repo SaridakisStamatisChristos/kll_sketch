@@ -1,0 +1,44 @@
+name: Competitive Quantile Benchmark
+
+on:
+  push:
+    branches: ["competitive-benchmark-2026-09"]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install benchmark competitors
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.5.2 datasketches==5.2.0 ddsketch==3.0.1
+          python -m pip install tdigest==0.5.2.2 || echo "standalone tdigest unavailable; benchmark will skip it"
+      - name: Build native kll-sketch backend
+        run: |
+          python -m kll_sketch._native_build
+          python -c "from kll_sketch import native_backend_info; info=native_backend_info(); print(info); assert info['available'] and info['enabled']"
+      - name: Run competitive benchmark
+        run: >-
+          python benchmarks/competitive_quantiles.py
+          --N 250000
+          --k 200
+          --seed 7331
+          --trials 2
+          --query-loops 500
+          --shards 8
+          --outdir competitive_out
+      - name: Print summary
+        if: always()
+        run: cat competitive_out/summary.md || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: competitive-quantile-results
+          path: competitive_out/
