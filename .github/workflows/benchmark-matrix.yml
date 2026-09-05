@@ -1,0 +1,52 @@
+name: Apache KLL Benchmark Matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "kll_sketch/_native*"
+      - "kll_sketch/kll_sketch.py"
+      - "benchmarks/competitive_kll_focus.py"
+      - "benchmarks/competitive_kll_matrix.py"
+      - ".github/workflows/benchmark-matrix.yml"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pinned peer benchmark stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.5.2 datasketches==5.2.0
+      - name: Build native backend
+        run: |
+          python -m kll_sketch._native_build
+          python -c "from kll_sketch import native_backend_info; i=native_backend_info(); print(i); assert i['available'] and i['enabled']"
+      - name: Run k/N matrix and sharded merge scaling
+        run: |
+          python benchmarks/competitive_kll_matrix.py \
+            --Ns 50000 250000 1000000 \
+            --ks 100 200 400 800 \
+            --shards 2 4 8 16 32 \
+            --merge-N 250000 \
+            --merge-k 200 \
+            --distributions uniform normal duplicates \
+            --trials 3 \
+            --query-loops 1000 \
+            --merge-loops 96 \
+            --outdir benchmark_matrix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apache-kll-benchmark-matrix
+          path: benchmark_matrix/

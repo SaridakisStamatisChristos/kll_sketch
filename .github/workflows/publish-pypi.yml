@@ -1,0 +1,87 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify release identity
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from kll_sketch import __version__
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          print("event", event, "tag", tag, "version", __version__)
+          if event == "release" and tag != f"v{__version__}":
+              raise SystemExit(f"release tag {tag!r} does not match package version v{__version__}")
+          PY
+      - name: Run pure-Python release tests
+        env:
+          KLL_SKETCH_DISABLE_NATIVE: "1"
+        run: |
+          python -m pip install -r kll_sketch/requirements-test.txt
+          python -m pytest -q kll_sketch/tests
+      - name: Build canonical PyPI artifacts
+        run: |
+          mkdir -p dist
+          python - <<'PY'
+          from kll_sketch._build_backend import build_sdist, build_wheel
+          print(build_wheel("dist"))
+          print(build_sdist("dist"))
+          PY
+      - name: Verify pure wheel and source distribution
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          from zipfile import ZipFile
+          from kll_sketch import __version__
+
+          dist = Path("dist")
+          wheels = list(dist.glob("*.whl"))
+          sdists = list(dist.glob("*.tar.gz"))
+          assert len(wheels) == 1 and len(sdists) == 1
+          wheel = wheels[0]
+          assert wheel.name == f"kll_sketch-{__version__}-py3-none-any.whl"
+          with ZipFile(wheel) as zf:
+              names = zf.namelist()
+              metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
+              assert f"Version: {__version__}" in metadata
+              assert "License-Expression: Apache-2.0" in metadata
+              assert not any(n.endswith((".so", ".pyd", ".cpp", ".inc")) for n in names)
+          with tarfile.open(sdists[0], "r:gz") as tf:
+              names = tf.getnames()
+              assert any(n.endswith("/kll_sketch/_native.cpp") for n in names)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

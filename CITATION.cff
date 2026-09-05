@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use kll-sketch in research or production work, please cite this software."
+title: "kll-sketch: High-integrity streaming KLL quantile sketch"
+type: software
+version: 3.2.0
+authors:
+  - family-names: Saridakis
+    given-names: Stamatis-Christos
+repository-code: "https://github.com/SaridakisStamatisChristos/kll_sketch"
+url: "https://github.com/SaridakisStamatisChristos/kll_sketch"
+license: Apache-2.0
+keywords:
+  - KLL
+  - quantile sketch
+  - streaming algorithms
+  - approximate data structures
+  - SIMD
+  - C++17
+  - Python
