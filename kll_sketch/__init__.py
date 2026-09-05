@@ -40,6 +40,8 @@ if _native_impl is not None and hasattr(_native_impl, "install_type_fastpaths"):
         _native_impl.install_v32_merge_fastpath()
     if hasattr(_native_impl, "install_v32_sequence_fastpath"):
         _native_impl.install_v32_sequence_fastpath()
+    if hasattr(_native_impl, "install_v32_slot_fastpath"):
+        _native_impl.install_v32_slot_fastpath()
     if hasattr(_native_impl, "set_type_fastpaths_enabled"):
         _native_impl.set_type_fastpaths_enabled(native_enabled())
 else:
