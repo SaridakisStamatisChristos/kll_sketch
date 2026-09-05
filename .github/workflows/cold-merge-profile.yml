@@ -1,0 +1,32 @@
+name: Cold Merge Profile
+
+on:
+  push:
+    branches: ["v3.2-cold-merge-lab"]
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install competitor
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.5.2 datasketches==5.2.0
+      - name: Build native backend
+        run: |
+          python -m kll_sketch._native_build
+          python -c "from kll_sketch import native_backend_info; i=native_backend_info(); print(i); assert i['available'] and i['enabled']"
+      - name: Profile cold eight-way merges
+        run: |
+          python benchmarks/cold_merge_profile.py --N 250000 --k 200 --seed 7331 --shards 8 --trials 40 --out cold_merge_profile.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-merge-profile
+          path: cold_merge_profile.json
