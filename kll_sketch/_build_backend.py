@@ -173,7 +173,14 @@ def build_sdist(sdist_directory: str, config_settings: Mapping[str, object] | No
     with tempfile.TemporaryDirectory() as tmpdir:
         sdist_root = Path(tmpdir) / f"{_NORMALIZED_NAME}-{_VERSION}"
         sdist_root.mkdir()
-        for item in ["README.md", "LICENSE", "pyproject.toml"]:
+        for item in [
+            "README.md",
+            "LICENSE",
+            "pyproject.toml",
+            "CITATION.cff",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+        ]:
             source = PROJECT_ROOT / item
             if source.exists():
                 shutil.copy2(source, sdist_root / source.name)

@@ -1,32 +1,75 @@
-# Release checklist
+# v3.2.0 release checklist
 
-The release process is designed so the exact source commit can be validated and packaged without build-time third-party dependencies.
+This checklist is intentionally commit-specific. Release only from a commit whose CI and
+benchmark evidence can be traced directly to the `v3.2.0` tag.
 
-## 1. Start clean
+Production baseline entering final release work:
+`6a762ad4f76f8267bf1e8a78d9191ca39dd992ab`.
+
+## 1. Start clean and verify identity
 
 ```bash
 git fetch --tags --prune
-git checkout <release-commit-or-tag>
-python -m venv .venv
-. .venv/bin/activate
+git checkout <release-commit>
+git status --short
+python - <<'PY'
+from kll_sketch import __version__
+assert __version__ == "3.2.0"
+print(__version__)
+PY
 ```
 
-## 2. Run validation
+The final release commit must descend from the production baseline and must not contain a
+core-engine semantic redesign.
+
+## 2. Run correctness and coverage
 
 ```bash
 python -m pip install -r kll_sketch/requirements-test.txt
-python -m pytest -q kll_sketch/tests --cov=kll_sketch --cov-report=term-missing
-python benchmarks/bench_kll.py --outdir bench_out --Ns 1e5 --capacities 100 200 400 800 --trials 5
-python benchmarks/validate_benchmarks.py bench_out
+KLL_SKETCH_DISABLE_NATIVE=1 python -m pytest -q kll_sketch/tests \
+  --cov=kll_sketch --cov-report=term-missing
+python -m kll_sketch._native_build
+python -m pytest -q kll_sketch/tests
 ```
 
-The runtime coverage gate is 90%.
+Runtime branch-aware coverage must remain at least 90%.
 
-## 3. Build wheel and sdist with the in-tree backend
+## 3. Run rank-space and native performance gates
 
 ```bash
-rm -rf dist
-mkdir dist
+KLL_SKETCH_DISABLE_NATIVE=1 python benchmarks/bench_kll.py \
+  --outdir bench_out --Ns 1e5 --capacities 100 200 400 800 --trials 5
+python benchmarks/validate_benchmarks.py bench_out
+python benchmarks/performance_regression.py
+```
+
+Do not replace parity checks with timing checks: native state must remain byte-identical
+to the Python reference on the covered fixtures.
+
+## 4. Reproduce Apache DataSketches evidence
+
+```bash
+python -m pip install numpy==2.5.2 datasketches==5.2.0
+python benchmarks/competitive_kll_focus.py \
+  --N 250000 --k 200 --seed 7331 --trials 5 \
+  --query-loops 2000 --shards 8 --merge-loops 200
+python benchmarks/competitive_kll_cold_merge.py
+python benchmarks/competitive_kll_matrix.py \
+  --Ns 50000 250000 1000000 --ks 100 200 400 800 \
+  --shards 2 4 8 16 32 --merge-N 250000 --merge-k 200 \
+  --distributions uniform normal duplicates --trials 3 \
+  --query-loops 1000 --merge-loops 96 --outdir benchmark_matrix
+```
+
+Preserve JSON/CSV outputs. Claims in README/release notes must match measured artifacts
+and remain explicitly runner/workload scoped.
+
+## 5. Build canonical release artifacts
+
+The default publication artifacts are the pure universal wheel and source distribution:
+
+```bash
+rm -rf dist && mkdir dist
 python - <<'PY'
 from kll_sketch._build_backend import build_sdist, build_wheel
 print(build_wheel("dist"))
@@ -34,60 +77,51 @@ print(build_sdist("dist"))
 PY
 ```
 
-## 4. Inspect and install artifacts
+`.github/workflows/release-artifacts.yml` performs the authoritative artifact-content,
+metadata, install, smoke, and SHA-256 checks. Native wheels are explicit platform-local
+build products; they are not silently substituted for the canonical pure PyPI wheel.
 
-Check that the wheel contains only runtime package files plus dist-info metadata, not tests or build-backend internals.
+## 6. PyPI Trusted Publisher prerequisite
 
-```bash
-python - <<'PY'
-from pathlib import Path
-from zipfile import ZipFile
-wheel = next(Path("dist").glob("*.whl"))
-with ZipFile(wheel) as zf:
-    names = zf.namelist()
-    assert "kll_sketch/kll_sketch.py" in names
-    assert "kll_sketch/__init__.py" in names
-    assert not any("/tests/" in n for n in names)
-    metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
-    assert "Metadata-Version: 2.4" in metadata
-    assert "License-Expression: Apache-2.0" in metadata
-PY
-```
+Before publishing the GitHub Release, configure a PyPI Trusted Publisher for:
 
-Then install the wheel into a clean environment and run a round-trip smoke test.
+- owner: `SaridakisStamatisChristos`;
+- repository: `kll_sketch`;
+- workflow: `publish-pypi.yml`;
+- environment: `pypi`.
 
-## 5. Verify offline source installation
+Protect the GitHub `pypi` environment. The workflow requests `id-token: write` only in
+the publish job and stores no long-lived PyPI API token.
 
-```bash
-python -m venv .venv-offline
-PIP_NO_INDEX=1 .venv-offline/bin/pip install --no-index .
-```
+If the project name does not yet exist on PyPI, configure a pending Trusted Publisher in
+PyPI first. Publication itself is intentionally not attempted during ordinary CI.
 
-This is a separate gate from wheel installation.
+## 7. Citation / Zenodo prerequisite
 
-## 6. Capture hashes
+`CITATION.cff` is the canonical in-repository citation metadata. Enable this repository
+in Zenodo's GitHub integration **before** creating the GitHub Release if automatic archive
+creation is desired. Do not invent or pre-fill a DOI; add the Zenodo DOI only after the
+archive exists.
+
+## 8. Tag and GitHub Release
+
+Only after every required workflow is green for the exact commit:
 
 ```bash
-python - <<'PY'
-from pathlib import Path
-import hashlib
-with open("dist/SHA256SUMS", "w", encoding="utf-8") as out:
-    for artifact in sorted(Path("dist").glob("kll_sketch-*")):
-        out.write(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}\n")
-PY
+git tag -s v3.2.0 <release-commit> -m "kll-sketch v3.2.0"
+git push origin v3.2.0
 ```
 
-Optionally sign `SHA256SUMS` with the project's release-signing process.
+Create the GitHub Release from tag `v3.2.0` using
+`docs/release-notes-v3.2.0.md`. The tag push re-runs release artifact and benchmark-matrix
+workflows; publishing the GitHub Release triggers the OIDC PyPI workflow.
 
-## 7. Serialization compatibility gate
+## 9. Post-release verification
 
-Before release:
-
-- load committed/archived KLL1 fixtures with the v2 reader;
-- verify KLL2 round trips byte-for-byte;
-- verify corruption tests reject modified payloads;
-- document that v1 readers cannot read KLL2 if a downgrade is planned.
-
-## 8. Tag and publish
-
-Create the signed release tag only after CI is green for the exact source commit and artifacts have been verified.
+- confirm GitHub Release points to the intended tag/commit;
+- confirm wheel/sdist hashes and installed `__version__`;
+- confirm the PyPI project exposes `3.2.0` and the universal wheel/sdist;
+- install from PyPI into a clean environment and run a KLL2 round-trip smoke test;
+- confirm Zenodo archive/DOI if integration was enabled;
+- if a DOI exists, update citation metadata in the next documented metadata commit rather
+  than rewriting the released tag.

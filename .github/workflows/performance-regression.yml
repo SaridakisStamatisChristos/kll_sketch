@@ -1,0 +1,49 @@
+name: Performance Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "kll_sketch/**"
+      - "benchmarks/performance_regression.py"
+      - ".github/workflows/performance-regression.yml"
+  push:
+    branches: [main]
+    paths:
+      - "kll_sketch/**"
+      - "benchmarks/performance_regression.py"
+      - ".github/workflows/performance-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-vs-reference:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build native backend
+        run: |
+          python -m kll_sketch._native_build
+          python -c "from kll_sketch import native_backend_info; i=native_backend_info(); print(i); assert i['available'] and i['enabled']"
+      - name: Same-process semantic and performance gate
+        run: |
+          python benchmarks/performance_regression.py \
+            --N 250000 \
+            --k 200 \
+            --shards 8 \
+            --trials 5 \
+            --query-loops 2000 \
+            --merge-loops 96 \
+            --min-ingestion-speedup 50 \
+            --min-query-speedup 5 \
+            --min-merge-speedup 5 \
+            --out performance_regression.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-regression
+          path: performance_regression.json
