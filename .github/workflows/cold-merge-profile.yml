@@ -25,7 +25,7 @@ jobs:
           python -c "from kll_sketch import native_backend_info; i=native_backend_info(); print(i); assert i['available'] and i['enabled']"
       - name: Profile cold eight-way merges
         run: |
-          python benchmarks/cold_merge_profile.py --N 250000 --k 200 --seed 7331 --shards 8 --trials 40 --out cold_merge_profile.json
+          PYTHONPATH=. python benchmarks/cold_merge_profile.py --N 250000 --k 200 --seed 7331 --shards 8 --trials 40 --out cold_merge_profile.json
       - uses: actions/upload-artifact@v4
         with:
           name: cold-merge-profile
