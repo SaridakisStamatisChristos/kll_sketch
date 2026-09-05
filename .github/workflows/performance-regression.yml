@@ -39,9 +39,9 @@ jobs:
             --trials 5 \
             --query-loops 2000 \
             --merge-loops 96 \
-            --min-ingestion-speedup 1.15 \
-            --min-query-speedup 1.05 \
-            --min-merge-speedup 1.05 \
+            --min-ingestion-speedup 50 \
+            --min-query-speedup 5 \
+            --min-merge-speedup 5 \
             --out performance_regression.json
       - uses: actions/upload-artifact@v4
         with:
