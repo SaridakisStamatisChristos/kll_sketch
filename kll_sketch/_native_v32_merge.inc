@@ -25,6 +25,29 @@ bool read_empty_adoption_config_v32(
            src.retained <= src.total_capacity;
 }
 
+// For a fresh empty same-k destination, `_min_k` is exactly the configured k.
+// Therefore the generic resident-merge inheritance path does unnecessary work:
+// it reads both objects' Python attributes and performs a rich comparison on
+// every first merge.  Here only the source value can possibly tighten the
+// destination bound.  One lookup/conversion is enough, and the common same-k
+// case requires no Python write at all.
+bool inherit_empty_min_k_v32(PyObject* self, PyObject* other, const SketchState& src) {
+    if (!(src.n > src.k || src.levels.size() > 1U)) return true;
+
+    PyObject* src_min_k_obj = PyObject_GetAttrString(other, "_min_k");
+    if (!src_min_k_obj) return false;
+    const std::uint64_t src_min_k = PyLong_AsUnsignedLongLong(src_min_k_obj);
+    Py_DECREF(src_min_k_obj);
+    if (PyErr_Occurred()) return false;
+
+    if (src_min_k > src.k) {
+        PyErr_SetString(PyExc_RuntimeError, "native source min_k exceeds configured k");
+        return false;
+    }
+    if (src_min_k == src.k) return true;
+    return set_u64_attr(self, "_min_k", src_min_k);
+}
+
 PyObject* adopt_empty_resident_merge_v32(
     PyObject* self,
     PyObject* other,
@@ -36,7 +59,7 @@ PyObject* adopt_empty_resident_merge_v32(
         PyErr_SetString(PyExc_RuntimeError, "native state handle type is not installed");
         return nullptr;
     }
-    if (!inherit_min_k_if_needed(self, other, src)) return nullptr;
+    if (!inherit_empty_min_k_v32(self, other, src)) return nullptr;
 
     auto* state = new (std::nothrow) SketchState();
     if (!state) return PyErr_NoMemory();
