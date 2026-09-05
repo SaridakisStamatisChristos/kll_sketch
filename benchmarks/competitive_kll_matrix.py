@@ -33,6 +33,22 @@ def _positive(values: list[int], name: str) -> None:
         raise SystemExit(f"{name} must contain positive integers")
 
 
+def _source_sha() -> str | None:
+    """Return the source commit rather than GitHub's synthetic PR merge SHA."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path:
+        try:
+            payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
+            pull_request = payload.get("pull_request") or {}
+            head = pull_request.get("head") or {}
+            sha = head.get("sha")
+            if sha:
+                return str(sha)
+        except (OSError, ValueError, TypeError):
+            pass
+    return os.environ.get("GITHUB_SHA")
+
+
 def _environment(args: argparse.Namespace) -> dict:
     return {
         "project_version": __version__,
@@ -46,7 +62,8 @@ def _environment(args: argparse.Namespace) -> dict:
         "trials": args.trials,
         "query_loops": args.query_loops,
         "merge_loops": args.merge_loops,
-        "github_sha": os.environ.get("GITHUB_SHA"),
+        "source_sha": _source_sha(),
+        "github_run_id": os.environ.get("GITHUB_RUN_ID"),
     }
 
 
