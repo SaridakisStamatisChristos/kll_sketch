@@ -1,6 +1,6 @@
 # Native acceleration architecture
 
-KLL v3.2 uses an optional **CPython C API / C++17** acceleration layer while keeping the Python implementation as the portable reference and fallback.
+KLL v3.2 uses an optional **CPython C API / C++17** acceleration layer while keeping the Python implementation as the portable reference and semantic fallback.
 
 ## Compatibility contract
 
@@ -10,111 +10,98 @@ The extension is an optimization layer, not a different sketch algorithm.
 2. KLL2 serialization and KLL1 read compatibility are unchanged.
 3. Native compaction consumes the same SplitMix64 bits in the same order as the Python reference.
 4. Equal-value ordering, including `+0.0` / `-0.0`, is preserved where it affects canonical state.
-5. Failed native operations do not silently commit partial native state; merge paths retain explicit preflight/fallback semantics and unsupported/rejected operations fall back through the canonical Python path.
-6. Only replay-safe indexed/sized inputs are eligible for native bulk probing; generic one-shot iterators stay on the incremental Python path.
+5. Merge fast paths preflight before mutation; unsupported public semantics route through the canonical Python dispatcher.
+6. Only replay-safe indexed/sized inputs are eligible for native bulk probing; generic one-shot iterators remain safe.
 7. Users can force Python with `KLL_SKETCH_DISABLE_NATIVE=1` or `set_native_enabled(False)`.
-8. Quantile lookup falls back to Python when `n > 2**53`, retaining Python's exact int/float rank-comparison semantics at enormous cumulative weights.
+8. Quantile lookup falls back to Python when represented mass exceeds `2**53`, preserving exact integer-rank comparison semantics.
 
 ## Resident native state
 
-Version 3.1 introduced persistent native execution. Version 3.2 keeps that model and specializes the first resident merge into an empty destination.
-
-A compatible `KLL` can keep an opaque `SketchState` capsule resident across calls instead of converting Python levels to C++ and back for every operation. The resident state owns:
+A compatible `KLL` can keep an opaque C++ `SketchState` resident across calls instead of translating Python levels to C++ and back for every operation. Resident state owns:
 
 - retained KLL levels;
 - sorted level shadows used by compaction;
-- level capacities;
-- `n`, retained count, SplitMix64 state and compaction count;
+- deterministic level capacities;
+- `n`, retained count, SplitMix64 state, and compaction count;
 - exact minimum and maximum;
-- a mutation-invalidated native weighted query view.
+- lazily cached `min_k` merge-quality metadata;
+- a mutation-invalidated weighted query view.
 
-The Python object remains the public identity and stores the resident handle through its existing internal cache fields. Python levels are materialized again only at synchronization boundaries such as serialization, validation, copying, Python-only fallback, or disabling native dispatch.
+The Python object remains the public identity. Canonical Python levels are materialized again only at synchronization boundaries such as serialization, validation, copying, Python-only fallback, or disabling native dispatch.
 
-This arrangement avoids exposing a second public sketch type and keeps the Python implementation useful as an executable specification.
+## Native ingestion
 
-## Accelerated paths
+Compatible sized sequences and contiguous native-`double` buffers enter the resident C++ engine directly. The engine follows the same capacity geometry and lazy-compaction state machine as Python.
 
-The extension provides both legacy stateless helpers and the resident engine. The hot paths include:
+For one-dimensional C-contiguous PEP 3118 `double` (`d`) buffers on GCC/Clang x86 builds, finite-value validation and batch-extrema scanning use runtime-dispatched AVX2 when available. The extension is not globally compiled with `-mavx2`; unsupported CPUs retain the scalar path. Zero-containing batches preserve Python signed-zero extrema semantics through the tie-preserving path. Non-x86 and current MSVC builds use scalar scanning while retaining the rest of the C++ engine.
 
-- **bulk ingestion** — validates a safe sequence/buffer and evolves level 0 plus all required compactions in C++;
-- **empty-destination resident merge adoption** — when a fresh destination and resident source have the same configured `k`, v3.2 copies the already-valid source hierarchy directly into a new destination resident state instead of bootstrapping an empty state and running the general merge planner;
-- **non-empty resident merge** — retains the v3.1 structural preflight and exact native compaction path;
-- **resident quantiles** — uses the native weighted query view;
-- **resident ranks** — binary-searches the native query view;
-- **direct `quantiles_at` descriptor** — once native state is resident, the hot public batched-quantile call enters the extension directly, with the Python dispatcher retained as fallback;
-- **native level compaction/materialization helpers** — retained for fallback and compatibility paths.
+## Direct query dispatch
 
-### Empty-destination adoption semantics
+`KLL.quantiles_at` is replaced at installation time with a CPython method descriptor when the native backend supports resident type fast paths. When state is resident, the call enters C++ directly and reuses the native weighted query view.
 
-The v3.2 shortcut is deliberately narrow. It is used only when:
+The descriptor falls back to the Python runtime dispatcher for cold/nonresident state, disabled native mode, unsupported inputs, and represented mass above `2**53`. Empty probability collections, invalid probabilities, and empty-sketch behavior remain API-compatible.
 
-- native dispatch is enabled;
-- the call is the ordinary positional `merge(other)` hot path;
-- destination is a fresh empty, nonresident `KLL`;
-- source is already resident and non-empty;
-- source and destination have the same configured `k`.
+## Resident merge engine
 
-The source hierarchy is already compressed under the same capacity geometry, so copying it into an empty destination cannot itself require compaction. Crucially, v3.2 copies the source levels/capacity metadata but **does not copy the source RNG state or source compaction count**. The destination retains its own SplitMix64 state and compaction counter exactly as the Python reference merge does. `min_k` inheritance still runs through the public merge semantics.
+Version 3.2 specializes both the first merge and subsequent resident-to-resident merges.
 
-A dedicated regression test builds source and destination with different seeds, performs the empty merge, then ingests enough additional data to force later compactions. Final native serialization must be byte-identical to the pure-Python reference, and the source sketch must remain unchanged.
+### Empty-destination adoption
 
-All non-eligible merges tail-call or continue through the v3.1 semantics.
+For ordinary positional `merge(other)` when the destination is fresh/empty, the source is resident/non-empty, and configured `k` matches, the destination can adopt a copy of the source's already-valid hierarchy without bootstrapping an empty resident state and running the general append planner.
 
-## SIMD policy
+The source levels/capacity metadata are copied, but the destination **retains its own RNG state and compaction count**. This matches Python semantics for later compactions. `min_k`, extrema, represented mass, and source immutability remain preserved.
 
-For one-dimensional C-contiguous buffers with native PEP 3118 `double` format (`d`), the resident ingestion path reads the native buffer directly.
+### Structural preflight
 
-On GCC/Clang x86 builds:
+For resident-to-resident merge, v3.2 computes the post-append structural evolution before mutation. The preflight determines:
 
-- a function-specific AVX2 scanner validates finiteness four doubles at a time;
-- the same scan reduces batch extrema;
-- AVX2 is selected only after runtime CPU feature detection;
-- the extension is **not** globally compiled with `-mavx2`;
-- zero-containing batches use the tie-preserving scalar extrema pass required to reproduce Python signed-zero behavior.
+- required level count and capacity geometry;
+- total retained count after each structural compaction;
+- final compaction count;
+- exactly which levels will compact;
+- the exact compact-level execution sequence for normal-sized plans.
 
-If AVX2 is unavailable, or on non-x86 / current MSVC builds, the scan is scalar. The rest of the resident KLL engine still executes in C++.
+Compaction sizes depend on level cardinality, not on the random parity/value choice, so the sequence can be proven without consuming RNG bits.
 
-`native_backend_info()` reports `simd='avx2-runtime'` or `simd='scalar'`, compiler information, API version, and whether persistent state is available.
+### Raw-write elision
 
-## Merge transaction model
+If preflight proves that a higher level will immediately compact, the merge need not materialize source values into that level's canonical raw vector only to destroy them moments later. The sorted shadow remains authoritative transiently; compaction restores raw/sorted parity at the boundary leftover.
 
-Non-empty resident merge avoids cloning the entire destination sketch before every successful merge. Its v3.1 structural preflight proves compaction sizes and capacity evolution before mutation, then runs the ordinary exact compactor. Unsupported or replay-safe preflight failures can use the canonical fallback path; impossible post-mutation internal failures are surfaced rather than replayed.
+### Exact-sequence execution
 
-The v3.2 empty-destination adoption path has no destructive destination payload to roll back: it allocates and populates a new native state first, then installs that resident state only after construction succeeds.
+After preflight, normal resident merges execute the recorded compact-level sequence directly rather than rescanning every level after each compaction to rediscover the same next compactable level. Deep/pathological plans that exceed the fixed fast-plan capacity fall back before mutation to the established v3.2 path.
 
-Several alternatives were benchmarked and rejected rather than accumulated:
+The executor still consumes SplitMix64 bits only inside the canonical compactor, so deterministic state and byte-level serialization remain unchanged.
 
-- lazy invalidation/rebuild of sorted shadows regressed focused merge to roughly 152 us versus roughly 49 us for Apache;
-- skipping the structural planner for non-compacting resident merges regressed the focused ratio;
-- pre-reserving predicted compaction peaks also regressed the focused merge ratio;
-- a `min_k` cache experiment from v3.1 was likewise rejected after a measured regression.
+### Cached Python slot keys
 
-The release therefore retains only the optimization that produced a repeatable benefit: direct empty-destination adoption.
+The hot native descriptor touches the same slotted Python fields on every merge: resident handles, `n`, retained count, extrema, RNG/compaction metadata during adoption, and `min_k` when needed. v3.2 interns those slot-name `PyUnicode` objects once when the fast path installs and uses `PyObject_GetAttr` / `PyObject_SetAttr` with the cached keys instead of repeatedly resolving C-string attribute names.
 
-## Query dispatch
+This layer changes no KLL mathematics. It reduces CPython framing cost and is especially material in fresh-destination and short merge sequences.
 
-`KLL.quantiles_at` has a native method descriptor when the compiled backend exposes the resident type fastpath. The descriptor uses resident native state directly when possible and otherwise tail-calls the Python runtime dispatcher.
+### `min_k` synchronization
 
-The direct path preserves important fallbacks:
+Resident state lazily caches `min_k`. Same-quality hot merges remain native without rereading Python metadata. If a source can tighten the bound, the destination's authoritative Python value is rechecked first so deliberate keyword/fallback merges cannot leave stale resident metadata.
 
-- empty probability collections remain valid;
-- empty sketches still raise on non-empty quantile requests;
-- generic iterables are materialized once;
-- invalid probabilities fail with the public error behavior;
-- sketches above `2**53` represented mass use the exact Python comparison path;
-- `set_native_enabled(False)` disables the direct descriptor as well as normal native dispatch.
+### Fallback boundaries
+
+Self-merge, keyword variants, disabled-native calls, incompatible/nonresident inputs, mixed semantics, and rejected preflight cases retain the canonical runtime fallback. Once mutation begins, impossible internal failures are surfaced rather than replayed over partially mutated state.
 
 ## Synchronization boundaries
 
-While resident, native state is authoritative for internal compaction/RNG details. Python-visible fields required by immediate public properties are mirrored after successful operations. Before a Python-only operation needs canonical levels, `_sync_state()` exports the resident levels and complete statistics back into the Python object.
+While resident, C++ state is authoritative for compaction/RNG details. Python-visible fields needed by immediate public properties are mirrored after successful operations. Before a Python-only operation requires canonical levels, runtime synchronization exports the resident hierarchy and complete statistics back into the Python object.
 
-Regression coverage verifies:
+Regression coverage includes:
 
-1. resident merge;
-2. continued resident ingestion after the merge;
-3. byte-identical serialization against the pure-Python reference;
-4. disabling native immediately after a resident merge and synchronizing cleanly;
-5. v3.2 empty-destination adoption with distinct source/destination seeds followed by later compaction.
+- resident ingestion and later compaction;
+- resident-to-resident merge;
+- empty-destination adoption with distinct source/destination seeds;
+- continued ingestion after merge;
+- `min_k` inheritance and fallback synchronization;
+- source immutability;
+- signed-zero stability;
+- disabling native immediately after merge;
+- byte-identical serialization against pure Python.
 
 ## Build model
 
@@ -144,33 +131,27 @@ The in-tree builder invokes the platform compiler directly using Python `sysconf
 
 No pybind11, Cython, setuptools, Meson, scikit-build, or NumPy is required by the package or native build driver.
 
-Native wheels are tagged for the active CPython/platform. The default pure wheel remains the portable distribution.
+Default wheels are `py3-none-any`. Explicit native wheels are CPython/platform tagged and contain the compiled extension but intentionally exclude `_native*.cpp`, `_native*.inc`, and `_native_build.py`. Source distributions retain the implementation/build sources.
 
 ## Differential validation
 
-Native CI compares resident and pure execution using identical seeds and input streams. Coverage includes:
+Native CI compares resident and pure execution using identical seeds and input streams. Coverage includes full `to_bytes()` equality, `debug_state()`, quantiles, ranks, CDF/PMF behavior, signed zero, invalid-batch replay, one-shot iterator safety, enormous-rank fallback, class identity, copy behavior, resident merge parity, native-disable synchronization, and packaging hygiene.
 
-- `debug_state()` and full `to_bytes()` equality;
-- quantiles, ranks, CDF and PMF behavior;
-- list/range ingestion;
-- contiguous `array('d')` ingestion;
-- signed-zero stability;
-- invalid-batch replay semantics;
-- one-shot iterator safety;
-- `n > 2**53` exact-query fallback;
-- class identity and copy behavior;
-- resident merge exact-state parity;
-- continued native ingestion after merge;
-- synchronization after native is disabled;
-- empty-destination merge adoption followed by later compaction with different source/destination seeds.
+`benchmarks/bench_native.py` requires serialized-state parity before reporting speed.
 
-`benchmarks/bench_native.py` requires byte-identical serialized state before reporting native speed. `benchmarks/competitive_kll_focus.py` compares public APIs against Apache DataSketches KLL on the same process/runner. Competitive timings are observations of the measured environment, not portable performance guarantees.
+`benchmarks/competitive_kll_focus.py` compares public KLL APIs against Apache DataSketches KLL on the same process/runner. `benchmarks/competitive_kll_cold_merge.py` isolates fresh-destination eight-way merge with 31 paired trials, 128 fresh destinations per trial, and alternating implementation order. `benchmarks/competitive_quantiles.py` provides the broader ecosystem comparison.
 
-## v3.2 benchmark interpretation
+## v3.2 performance snapshot
 
-On the retained v3.2 candidate gate (Ubuntu 24.04, CPython 3.13, `N=250000`, `k=200`, eight shards), the focused benchmark measured 50.19 us for the repeated eight-way `kll-sketch` merge versus 50.49 us for Apache KLL, while preserving the existing ingestion/query advantage on that runner.
+On a retained GitHub-hosted Ubuntu 24.04 / CPython 3.13.15 focused gate (`N=250000`, `k=200`, seven distributions, eight shards), the native engine measured:
 
-A separate broad two-trial cold-destination run measured 86.73 us for `kll-sketch` versus 66.45 us for Apache. The latter is intentionally kept visible: direct adoption materially reduces first-merge bootstrap work, but Apache still has an advantage for the measured cold one-shot sequence.
+- 30.81M updates/s versus 29.62M/s for Apache KLL;
+- 0.362 us versus 0.541 us for the repeated batched quantile set;
+- 43.92 us versus 47.86 us for repeated eight-way merge.
+
+The robust fresh-destination merge gate measured 32.61 us median for `kll-sketch` versus 34.31 us for Apache, with `kll-sketch` winning 30 of 31 paired trials.
+
+These are runner/workload observations, not portable performance guarantees. Serialized size and stochastic rank-error distributions remain separate dimensions of comparison.
 
 ## Scope boundaries
 
