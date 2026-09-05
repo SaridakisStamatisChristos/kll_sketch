@@ -64,15 +64,27 @@ def one_apache(sources, k: int):
     return total, positions, dst.n
 
 
+def level_sizes(sk: KLL) -> list[int]:
+    capsule = sk._cache_prefix
+    levels, _stats = _native_impl.state_export(capsule)
+    return [len(level) for level in levels]
+
+
 def structure_ours(sources, k: int, seed: int):
-    """Untimed pass exposing which source positions actually compact/grow."""
+    """Untimed pass exposing exact merge/compaction level-shape transitions."""
     dst = KLL(k, seed)
     rows = []
     previous_compactions = 0
     for i, src in enumerate(sources, 1):
+        src_sizes = level_sizes(src)
+        if i == 1:
+            pre_sizes = [0]
+        else:
+            pre_sizes = level_sizes(dst)
         dst.merge(src)
         capsule = dst._cache_prefix
         n, retained, rng_state, compactions, min_value, max_value, num_levels = _native_impl.state_stats(capsule)
+        post_sizes = level_sizes(dst)
         compactions = int(compactions)
         rows.append({
             "position": i,
@@ -81,6 +93,9 @@ def structure_ours(sources, k: int, seed: int):
             "num_levels": int(num_levels),
             "compactions_total": compactions,
             "compactions_delta": compactions - previous_compactions,
+            "dst_pre_level_sizes": pre_sizes,
+            "src_level_sizes": src_sizes,
+            "dst_post_level_sizes": post_sizes,
         })
         previous_compactions = compactions
     return rows
