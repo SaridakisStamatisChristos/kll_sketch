@@ -62,15 +62,50 @@ bool ensure_levels(SketchState& s, std::size_t count) {
     return rebuild_capacities(s);
 }
 
-template <class It>
-inline void stable_append_sorted_range(std::vector<double>& dst, It first, It last) {
+// std::inplace_merge is permitted to acquire a temporary buffer on every call.
+// Merge-heavy KLL workloads hit this path repeatedly across levels, and the
+// allocator traffic shows up disproportionately in cold 8-way merges. Keep one
+// scratch vector per calling thread instead. CPython calls this native backend
+// with the GIL held, while thread_local storage also keeps independent Python
+// threads isolated. Equal values choose the existing destination run first,
+// exactly matching stable-merge semantics (including +0.0/-0.0 ordering).
+inline std::vector<double>& stable_merge_scratch() {
+    thread_local std::vector<double> scratch;
+    return scratch;
+}
+
+template <class RandomIt>
+inline void stable_append_sorted_range(std::vector<double>& dst, RandomIt first, RandomIt last) {
     if (first == last) return;
-    const std::size_t old = dst.size();
-    dst.insert(dst.end(), first, last);
-    if (old) {
-        std::inplace_merge(dst.begin(), dst.begin() + static_cast<std::ptrdiff_t>(old), dst.end(),
-                           [](double a, double b) { return a < b; });
+    if (dst.empty()) {
+        dst.insert(dst.end(), first, last);
+        return;
     }
+
+    const std::size_t incoming = static_cast<std::size_t>(last - first);
+    if (incoming > std::numeric_limits<std::size_t>::max() - dst.size()) {
+        throw std::bad_alloc();
+    }
+    const std::size_t total = dst.size() + incoming;
+    auto& scratch = stable_merge_scratch();
+    scratch.clear();
+    if (scratch.capacity() < total) scratch.reserve(total);
+
+    auto left = dst.cbegin();
+    const auto left_end = dst.cend();
+    auto right = first;
+    while (left != left_end && right != last) {
+        if (*right < *left) {
+            scratch.push_back(*right);
+            ++right;
+        } else {
+            scratch.push_back(*left);
+            ++left;
+        }
+    }
+    scratch.insert(scratch.end(), left, left_end);
+    scratch.insert(scratch.end(), right, last);
+    dst.swap(scratch);
 }
 
 inline void stable_append_sorted(std::vector<double>& dst, const std::vector<double>& incoming) {
