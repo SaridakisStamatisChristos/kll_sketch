@@ -175,7 +175,8 @@ python -m pip wheel . --config-settings native=true
 
 A C++17 compiler and Python development headers are required for native compilation.
 Runtime native wheels exclude native implementation sources/build helpers; the source
-distribution retains those sources. Force pure Python with
+distribution retains those sources plus release/research metadata (`CITATION.cff`,
+`CONTRIBUTING.md`, and `SECURITY.md`). Force pure Python with
 `KLL_SKETCH_DISABLE_NATIVE=1` or `set_native_enabled(False)`.
 
 ## Apache DataSketches KLL performance evidence
@@ -204,10 +205,37 @@ alternated implementation order over 31 paired trials:
 | Paired trials won | **30 / 31** | 1 / 31 |
 | Median speed ratio | **1.049×** | — |
 
-The defensible claim is intentionally narrow: **kll-sketch was competitive with or
-faster than Apache DataSketches KLL on these measured ingestion/query/merge workloads at
-this parameter point**. Apache's serialized state was slightly smaller. KLL accuracy is
-stochastic and must be compared over repeated rank-error trials.
+### Multi-`N` / multi-`k` release matrix
+
+A broader release-candidate run on Ubuntu 24.04 / CPython 3.13.15 with
+NumPy 2.5.2 and Apache DataSketches 5.2.0 swept `N={50k,250k,1m}` and
+`k={100,200,400,800}` over uniform, normal, and duplicate-heavy inputs (three paired
+trials per cell):
+
+- ingestion was faster in **9/12** `(N, k)` cells; the other three were near parity,
+  with ratios of 0.983×–0.998× Apache;
+- repeated batched quantile queries were faster in **12/12** cells, by approximately
+  **1.52×–1.58×**;
+- median serialized footprint across the tested distributions stayed within roughly
+  **-3.0% to +2.5%** of Apache, depending on the cell;
+- observed rank error was mixed across cells, as expected for stochastic sketches; the
+  matrix is not evidence of universal accuracy dominance by either implementation.
+
+Sharded merge scaling at `N=250,000`, `k=200` showed the trade-off directly:
+
+| Shards | kll-sketch | Apache KLL | kll-sketch / Apache speed |
+| ---: | ---: | ---: | ---: |
+| 2 | 7.89 µs | 8.21 µs | **1.041×** |
+| 4 | 20.77 µs | **19.22 µs** | **0.925×** |
+| 8 | **42.31 µs** | 50.10 µs | **1.184×** |
+| 16 | **77.65 µs** | 85.28 µs | **1.098×** |
+| 32 | **142.54 µs** | 155.42 µs | **1.090×** |
+
+So the defensible release claim is intentionally bounded: **on the tested runner and
+workloads, kll-sketch 3.2 was consistently faster for repeated batched quantile queries,
+usually faster for ingestion, and faster for four of five measured shard counts; Apache
+won the 4-shard merge point.** Serialized footprint and stochastic rank error were
+competitive rather than uniformly superior.
 
 Reproduce the focused evidence:
 
@@ -220,7 +248,8 @@ python benchmarks/competitive_kll_cold_merge.py
 
 For release-grade breadth, `benchmarks/competitive_kll_matrix.py` sweeps
 `N={50k,250k,1m}`, `k={100,200,400,800}`, and merge shards `{2,4,8,16,32}` by default,
-emitting JSON/CSV artifacts. See [`docs/benchmarks.md`](docs/benchmarks.md). The workflow
+emitting JSON/CSV artifacts with the exact source commit and GitHub run id. See
+[`docs/benchmarks.md`](docs/benchmarks.md). The workflow
 `.github/workflows/benchmark-matrix.yml` preserves those artifacts; it is
 characterization, not a noisy third-party timing merge gate.
 
@@ -252,7 +281,8 @@ The release validation surface includes:
 - enormous-rank (`n > 2**53`) query fallback;
 - universal pure wheel, explicit native wheel, and offline source-install gates;
 - rank-space accuracy regression and same-process native performance regression;
-- focused Apache KLL, robust fresh-merge, and multi-`k`/multi-`N` release evidence.
+- focused Apache KLL, robust fresh-merge, and multi-`k`/multi-`N` release evidence;
+- pre-tag release artifact build/content/install verification.
 
 See [`docs/production-readiness.md`](docs/production-readiness.md) and
 [`docs/release-checklist.md`](docs/release-checklist.md).
