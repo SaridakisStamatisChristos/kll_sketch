@@ -139,7 +139,8 @@ def build_wheel(
             package_root,
             ignore=shutil.ignore_patterns(
                 "__pycache__", "*.pyc", "*.pyo", "tests", "requirements-test.txt", "LICENSE",
-                "_build_backend.py", "_metadata.py", "_native_build.py", "_native.cpp", "_native*.so", "_native*.pyd",
+                "_build_backend.py", "_metadata.py", "_native_build.py",
+                "_native*.cpp", "_native*.inc", "_native*.so", "_native*.pyd",
             ),
         )
         if native:

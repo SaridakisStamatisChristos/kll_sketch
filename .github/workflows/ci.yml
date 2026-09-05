@@ -103,7 +103,10 @@ jobs:
               assert not any("/tests/" in name for name in names)
               assert "kll_sketch/_build_backend.py" not in names
               assert "kll_sketch/_native_build.py" not in names
-              assert "kll_sketch/_native.cpp" not in names
+              assert not any(
+                  name.startswith("kll_sketch/_native") and name.endswith((".cpp", ".inc"))
+                  for name in names
+              )
               assert not any(name.endswith((".so", ".pyd")) for name in names)
               metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
               wheel_meta = zf.read(next(n for n in names if n.endswith("/WHEEL"))).decode()
@@ -160,8 +163,11 @@ jobs:
           with ZipFile(wheel) as zf:
               names = zf.namelist()
               assert any(name.startswith("kll_sketch/_native") and name.endswith(".so") for name in names)
-              assert "kll_sketch/_native.cpp" not in names
               assert "kll_sketch/_native_build.py" not in names
+              assert not any(
+                  name.startswith("kll_sketch/_native") and name.endswith((".cpp", ".inc"))
+                  for name in names
+              )
               wheel_meta = zf.read(next(n for n in names if n.endswith("/WHEEL"))).decode()
               assert "Root-Is-Purelib: false" in wheel_meta
           print(wheel)
