@@ -7,9 +7,13 @@
 //    are dead: canonical compaction immediately replaces the whole raw level by
 //    at most one leftover. Keep the sorted shadow authoritative transiently,
 //    skip those dead raw writes, and restore raw/sorted parity at compaction.
+// 3. min_k is cached lazily in resident state. Same-k hot merges stay entirely
+//    native after the first source lookup; a potentially tighter source verifies
+//    the Python destination bound before changing it, so keyword/fallback merges
+//    cannot leave stale native metadata.
 //
-// Both paths preserve the destination RNG stream, source immutability, Python
-// visibility, KLL2 byte semantics, and the established v3.1 fallback behavior.
+// These paths preserve the destination RNG stream, source logical immutability,
+// Python visibility, KLL2 byte semantics, and established v3.1 fallbacks.
 
 bool read_empty_adoption_config_v32(
     PyObject* self,
@@ -29,30 +33,66 @@ bool read_empty_adoption_config_v32(
            src.retained <= src.total_capacity;
 }
 
-// For a fresh empty same-k destination, `_min_k` starts at exactly k. Only a
-// source that has inherited a tighter bound can change it, so the generic
-// destination lookup + rich comparison is unnecessary on the first merge.
-bool inherit_empty_min_k_v32(PyObject* self, PyObject* other, const SketchState& src) {
-    if (!(src.n > src.k || src.levels.size() > 1U)) return true;
-
-    PyObject* src_min_k_obj = PyObject_GetAttrString(other, "_min_k");
-    if (!src_min_k_obj) return false;
-    const std::uint64_t src_min_k = PyLong_AsUnsignedLongLong(src_min_k_obj);
-    Py_DECREF(src_min_k_obj);
+bool load_min_k_cache_v32(PyObject* owner, SketchState& state) {
+    if (state.min_k_cache != 0ULL) return true;
+    PyObject* obj = PyObject_GetAttrString(owner, "_min_k");
+    if (!obj) return false;
+    const std::uint64_t value = PyLong_AsUnsignedLongLong(obj);
+    Py_DECREF(obj);
     if (PyErr_Occurred()) return false;
-
-    if (src_min_k > src.k) {
-        PyErr_SetString(PyExc_RuntimeError, "native source min_k exceeds configured k");
+    if (value == 0ULL || value > state.k) {
+        PyErr_SetString(PyExc_RuntimeError, "native min_k metadata is inconsistent");
         return false;
     }
-    if (src_min_k == src.k) return true;
-    return set_u64_attr(self, "_min_k", src_min_k);
+    state.min_k_cache = value;
+    return true;
+}
+
+bool inherit_empty_min_k_v32(PyObject* self, PyObject* other, SketchState& src) {
+    if (!(src.n > src.k || src.levels.size() > 1U)) {
+        if (src.min_k_cache == 0ULL) src.min_k_cache = src.k;
+        return true;
+    }
+    if (!load_min_k_cache_v32(other, src)) return false;
+    if (src.min_k_cache == src.k) return true;
+    return set_u64_attr(self, "_min_k", src.min_k_cache);
+}
+
+// The destination cache can become stale only if a deliberately non-fast path
+// (for example a keyword merge) tightened Python `_min_k`. We therefore avoid
+// reading Python on the common same-k path. Only when a source appears capable
+// of tightening the cached bound do we re-read the authoritative Python value
+// before deciding whether a write is necessary.
+bool inherit_resident_min_k_v32(
+    PyObject* self,
+    PyObject* other,
+    SketchState& dst,
+    SketchState& src
+) {
+    if (!(src.n > src.k || src.levels.size() > 1U)) return true;
+    if (!load_min_k_cache_v32(other, src) || !load_min_k_cache_v32(self, dst)) return false;
+    if (src.min_k_cache >= dst.min_k_cache) return true;
+
+    PyObject* current_obj = PyObject_GetAttrString(self, "_min_k");
+    if (!current_obj) return false;
+    const std::uint64_t current = PyLong_AsUnsignedLongLong(current_obj);
+    Py_DECREF(current_obj);
+    if (PyErr_Occurred()) return false;
+    if (current == 0ULL || current > dst.k) {
+        PyErr_SetString(PyExc_RuntimeError, "destination min_k metadata is inconsistent");
+        return false;
+    }
+    dst.min_k_cache = current;
+    if (src.min_k_cache >= dst.min_k_cache) return true;
+
+    dst.min_k_cache = src.min_k_cache;
+    return set_u64_attr(self, "_min_k", dst.min_k_cache);
 }
 
 PyObject* adopt_empty_resident_merge_v32(
     PyObject* self,
     PyObject* other,
-    const SketchState& src,
+    SketchState& src,
     std::uint64_t rng_state,
     std::uint64_t compactions
 ) {
@@ -75,6 +115,7 @@ PyObject* adopt_empty_resident_merge_v32(
     state->total_capacity = src.total_capacity;
     state->n = src.n;
     state->k = src.k;
+    state->min_k_cache = src.min_k_cache == 0ULL ? src.k : src.min_k_cache;
     state->rng_state = rng_state;
     state->compactions = compactions;
     state->retained = src.retained;
@@ -443,7 +484,7 @@ PyObject* fast_resident_merge_v32(
         Py_DECREF(dst_capsule);
         return call_merge_fallback(self, args, nargs, kwnames);
     }
-    if (!inherit_min_k_if_needed(self, other, *src)) {
+    if (!inherit_resident_min_k_v32(self, other, *dst, *src)) {
         Py_DECREF(src_capsule);
         Py_DECREF(dst_capsule);
         return nullptr;
