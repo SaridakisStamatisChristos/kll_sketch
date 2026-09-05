@@ -1,6 +1,16 @@
 name: Release Artifacts
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "kll_sketch/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "CITATION.cff"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/workflows/release-artifacts.yml"
   workflow_dispatch:
   push:
     tags:
@@ -66,10 +76,11 @@ jobs:
               assert not any(n.endswith((".cpp", ".inc", ".so", ".pyd")) for n in names)
           with tarfile.open(sdist, "r:gz") as tf:
               names = tf.getnames()
-              assert any(n.endswith("/README.md") for n in names)
-              assert any(n.endswith("/LICENSE") for n in names)
-              assert any(n.endswith("/pyproject.toml") for n in names)
-              assert any(n.endswith("/kll_sketch/_native.cpp") for n in names)
+              for required in (
+                  "README.md", "LICENSE", "pyproject.toml", "CITATION.cff",
+                  "CONTRIBUTING.md", "SECURITY.md", "kll_sketch/_native.cpp",
+              ):
+                  assert any(n.endswith("/" + required) for n in names), required
           with (dist / "SHA256SUMS").open("w", encoding="utf-8") as out:
               for artifact in sorted(p for p in dist.iterdir() if p.is_file() and p.name != "SHA256SUMS"):
                   out.write(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}\n")
