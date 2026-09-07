@@ -1,4 +1,4 @@
-# KLL Streaming Quantile Sketch
+# kll-sketch — KLL Streaming Quantile Sketch for Python
 
 A high-integrity, mergeable **KLL quantile sketch** for Python with reproducible seeded
 randomness, exact extrema, strict versioned serialization, rank-space validation, zero
@@ -9,6 +9,12 @@ API and `KLL2` wire format stable, retains standards-required `PKG-INFO` metadat
 source distributions, and stores the declared license at the standardized wheel path.
 Pure Python remains the canonical semantic reference/fallback: removing or disabling
 the extension changes performance, not the public contract.
+
+Install the current public release from [PyPI](https://pypi.org/project/kll-sketch/):
+
+```bash
+pip install kll-sketch
+```
 
 ## Highlights
 
@@ -25,6 +31,37 @@ the extension changes performance, not the public contract.
 - pure Python support on Python 3.10–3.14 across Linux, macOS, and Windows;
 - self-hosted PEP 517 build backend with no runtime dependency and no third-party native
   build framework.
+
+## When to use kll-sketch
+
+Use `kll-sketch` when you need approximate quantiles or percentiles from a stream or a
+very large dataset without retaining every observation. It provides bounded-memory
+estimates for medians and tail percentiles, and its mergeable sketches fit distributed
+or partitioned data pipelines.
+
+The canonical pure-Python implementation has zero runtime dependencies. An explicit
+seed provides deterministic, reproducible behavior for tests and repeatable analyses,
+while an optional C++17/SIMD backend accelerates supported workloads without changing
+the public contract. For small in-memory datasets that require exact order statistics,
+an exact sort is usually the more appropriate choice.
+
+## kll-sketch and Apache DataSketches
+
+Both projects provide mergeable KLL quantile sketches, but their Python packaging and
+project scope differ. This compact table is for orientation, not a performance claim.
+
+| Attribute | kll-sketch | Apache DataSketches KLL |
+| --- | --- | --- |
+| KLL quantile sketch | Yes | Yes |
+| Mergeable sketches | Yes | Yes |
+| Python package scope | Focused KLL implementation | Broader sketch library that includes KLL |
+| Canonical runtime path | Pure Python with zero runtime dependencies | Compiled `datasketches` package |
+| Native acceleration | Optional C++17/SIMD backend | Native code supplied through the package |
+| Explicit reproducibility contract | User-supplied seed with deterministic semantics | Not evaluated here |
+| Serialization | Versioned KLL1/KLL2 support | Separate Apache format; wire compatibility is not claimed |
+
+For measured, workload-scoped results—including points where Apache wins—see
+[Apache DataSketches KLL performance evidence](#apache-datasketches-kll-performance-evidence).
 
 ## Quick start
 
