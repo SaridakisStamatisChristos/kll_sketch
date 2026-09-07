@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.2
+
+### Packaging
+
+- Corrected the wheel layout so the declared `LICENSE` file is stored under the
+  standardized `.dist-info/licenses/` directory required by Core Metadata 2.4.
+- Added regression coverage and release-workflow validation for the declared wheel
+  license path and contents before PyPI publication.
+- Preserved the public API, KLL/KLLSketch identity, KLL1/KLL2 wire compatibility,
+  deterministic seeded behavior, and native/pure-Python execution semantics unchanged.
+
 ## 3.2.1
 
 ### Packaging

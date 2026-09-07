@@ -102,8 +102,11 @@ def _write_metadata(dist_info: Path, *, tag: str = "py3-none-any", pure: bool = 
     license_info = PROJECT_METADATA.get("license", {})
     if isinstance(license_info, dict):
         for rel_path in license_info.get("files", []):
-            source = PROJECT_ROOT / rel_path
-            (dist_info / Path(rel_path).name).write_bytes(source.read_bytes())
+            license_path = Path(rel_path)
+            source = PROJECT_ROOT / license_path
+            destination = dist_info / "licenses" / license_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
 
 
 def _iter_files(directory: Path) -> Iterable[Path]:

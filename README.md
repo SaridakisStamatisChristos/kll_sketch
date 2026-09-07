@@ -4,11 +4,11 @@ A high-integrity, mergeable **KLL quantile sketch** for Python with reproducible
 randomness, exact extrema, strict versioned serialization, rank-space validation, zero
 runtime dependencies, and an optional **resident C++17 / SIMD acceleration backend**.
 
-Version **3.2.1** is a packaging-only patch over the resident native architecture in
-3.2.0. It keeps the public `KLL` API and `KLL2` wire format stable, and adds the
-standards-required `PKG-INFO` metadata to source distributions. Pure Python remains the
-canonical semantic reference/fallback: removing or disabling the extension changes
-performance, not the public contract.
+Version **3.2.2** is a packaging-only correction over 3.2.1. It keeps the public `KLL`
+API and `KLL2` wire format stable, retains standards-required `PKG-INFO` metadata in
+source distributions, and stores the declared license at the standardized wheel path.
+Pure Python remains the canonical semantic reference/fallback: removing or disabling
+the extension changes performance, not the public contract.
 
 ## Highlights
 
@@ -60,7 +60,7 @@ restored = KLL.from_bytes(blob)
 assert restored.to_bytes() == blob
 ```
 
-Version 3.2.1 does **not** introduce a new serialization format.
+Version 3.2.2 does **not** introduce a new serialization format.
 
 ## Public API
 
@@ -158,7 +158,7 @@ Build the default universal wheel:
 
 ```bash
 python -m pip wheel .
-# kll_sketch-3.2.1-py3-none-any.whl
+# kll_sketch-3.2.2-py3-none-any.whl
 ```
 
 Build the optional native extension in a checkout:
@@ -300,13 +300,14 @@ different compaction history from replaying an expanded interleaved stream.
 - Security model/reporting: [`SECURITY.md`](SECURITY.md)
 - Contribution/benchmark rules: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Citation metadata: [`CITATION.cff`](CITATION.cff)
+- v3.2.2 release notes: [`docs/release-notes-v3.2.2.md`](docs/release-notes-v3.2.2.md)
 - v3.2.1 release notes: [`docs/release-notes-v3.2.1.md`](docs/release-notes-v3.2.1.md)
 - v3.2.0 release notes: [`docs/release-notes-v3.2.0.md`](docs/release-notes-v3.2.0.md)
 
 `CITATION.cff` intentionally contains no DOI until a real archival DOI exists. The
 repository is prepared for a Zenodo archive of the tagged GitHub release.
 
-## Compatibility notes for 3.2.1
+## Compatibility notes for 3.2.2
 
 - Python 3.10+ remains supported.
 - `KLLSketch is KLL` remains true.
@@ -316,6 +317,8 @@ repository is prepared for a Zenodo archive of the tagged GitHub release.
 - the canonical distribution remains the pure `py3-none-any` wheel plus source
   distribution; native builds remain explicit.
 - source distributions now include standards-compliant root `PKG-INFO` metadata.
+- wheels store the declared license at `.dist-info/licenses/LICENSE`, matching Core
+  Metadata 2.4 and PyPI validation requirements.
 
 ## References
 

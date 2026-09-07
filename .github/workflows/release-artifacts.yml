@@ -78,10 +78,18 @@ jobs:
           assert wheel.name.endswith("-py3-none-any.whl")
           with ZipFile(wheel) as zf:
               names = zf.namelist()
-              metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
-              assert "Version: 3.2.1" in metadata
+              dist_info = "kll_sketch-3.2.2.dist-info"
+              metadata = zf.read(f"{dist_info}/METADATA").decode()
+              license_path = f"{dist_info}/licenses/LICENSE"
+              record = zf.read(f"{dist_info}/RECORD").decode().splitlines()
+              assert "Version: 3.2.2" in metadata
               assert "Requires-Python: >=3.10" in metadata
               assert "License-Expression: Apache-2.0" in metadata
+              assert "License-File: LICENSE" in metadata
+              assert license_path in names
+              assert f"{dist_info}/LICENSE" not in names
+              assert zf.read(license_path) == Path("LICENSE").read_bytes()
+              assert any(line.startswith(f"{license_path},sha256=") for line in record)
               assert not any("/tests/" in n for n in names)
               assert not any(n.endswith((".cpp", ".inc", ".so", ".pyd")) for n in names)
           with tarfile.open(sdist, "r:gz") as tf:
@@ -97,7 +105,7 @@ jobs:
               assert pkg_info_file is not None
               pkg_info = pkg_info_file.read().decode()
               assert "Metadata-Version: 2.4" in pkg_info
-              assert "Version: 3.2.1" in pkg_info
+              assert "Version: 3.2.2" in pkg_info
           with (dist / "SHA256SUMS").open("w", encoding="utf-8") as out:
               for artifact in sorted(p for p in dist.iterdir() if p.is_file() and p.name != "SHA256SUMS"):
                   out.write(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}\n")
@@ -109,7 +117,7 @@ jobs:
           cd /tmp
           /tmp/kll-release-wheel/bin/python - <<'PY'
           from kll_sketch import KLL, __version__, native_available
-          assert __version__ == "3.2.1"
+          assert __version__ == "3.2.2"
           assert not native_available()
           sk = KLL(200, 7331)
           sk.extend(range(100000))
@@ -119,5 +127,5 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: kll-sketch-v3.2.1-release-artifacts
+          name: kll-sketch-v3.2.2-release-artifacts
           path: dist/

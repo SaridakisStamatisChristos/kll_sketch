@@ -56,7 +56,7 @@ def set_native_enabled(enabled: bool) -> None:
         _native_impl.set_type_fastpaths_enabled(native_enabled())
 
 
-__version__ = "3.2.1"
+__version__ = "3.2.2"
 
 # Historical benchmark-facing name. Alias rather than subclass so isinstance,
 # serialization and type identity stay simple and predictable.

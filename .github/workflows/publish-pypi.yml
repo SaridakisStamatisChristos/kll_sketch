@@ -57,9 +57,17 @@ jobs:
           assert wheel.name == f"kll_sketch-{__version__}-py3-none-any.whl"
           with ZipFile(wheel) as zf:
               names = zf.namelist()
-              metadata = zf.read(next(n for n in names if n.endswith("/METADATA"))).decode()
+              dist_info = f"kll_sketch-{__version__}.dist-info"
+              metadata = zf.read(f"{dist_info}/METADATA").decode()
+              license_path = f"{dist_info}/licenses/LICENSE"
+              record = zf.read(f"{dist_info}/RECORD").decode().splitlines()
               assert f"Version: {__version__}" in metadata
               assert "License-Expression: Apache-2.0" in metadata
+              assert "License-File: LICENSE" in metadata
+              assert license_path in names
+              assert f"{dist_info}/LICENSE" not in names
+              assert zf.read(license_path) == Path("LICENSE").read_bytes()
+              assert any(line.startswith(f"{license_path},sha256=") for line in record)
               assert not any(n.endswith((".so", ".pyd", ".cpp", ".inc")) for n in names)
           with tarfile.open(sdists[0], "r:gz") as tf:
               names = tf.getnames()
