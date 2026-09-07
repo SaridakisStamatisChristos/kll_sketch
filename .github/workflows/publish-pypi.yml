@@ -65,9 +65,16 @@ jobs:
               names = tf.getnames()
               for required in (
                   "README.md", "LICENSE", "pyproject.toml", "CITATION.cff",
-                  "CONTRIBUTING.md", "SECURITY.md", "kll_sketch/_native.cpp",
+                  "CONTRIBUTING.md", "SECURITY.md", "PKG-INFO",
+                  "kll_sketch/_native.cpp",
               ):
                   assert any(n.endswith("/" + required) for n in names), required
+              pkg_info_name = next(n for n in names if n.endswith("/PKG-INFO"))
+              pkg_info_file = tf.extractfile(pkg_info_name)
+              assert pkg_info_file is not None
+              pkg_info = pkg_info_file.read().decode()
+              assert "Metadata-Version: 2.4" in pkg_info
+              assert f"Version: {__version__}" in pkg_info
           PY
       - uses: actions/upload-artifact@v4
         with:

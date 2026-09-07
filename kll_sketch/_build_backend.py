@@ -173,6 +173,7 @@ def build_sdist(sdist_directory: str, config_settings: Mapping[str, object] | No
     with tempfile.TemporaryDirectory() as tmpdir:
         sdist_root = Path(tmpdir) / f"{_NORMALIZED_NAME}-{_VERSION}"
         sdist_root.mkdir()
+        (sdist_root / "PKG-INFO").write_text(_build_metadata_text(), encoding="utf-8")
         for item in [
             "README.md",
             "LICENSE",

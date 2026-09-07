@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.1
+
+### Packaging
+
+- Added the standards-required root `PKG-INFO` metadata file to source distributions.
+- Added regression coverage and release-workflow validation for source-distribution core
+  metadata before PyPI publication.
+- Preserved the public API, KLL/KLLSketch identity, KLL1/KLL2 wire compatibility,
+  deterministic seeded behavior, and native/pure-Python execution semantics unchanged.
+
 ## 3.2.0
 
 ### Resident merge engine
